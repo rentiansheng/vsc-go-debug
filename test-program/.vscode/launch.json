@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Enhanced configuration",
+            "type": "go-debug-pro",
+            "request": "launch",
+            "program": "${workspaceFolder}/test-program/main.go",
+            "cwd": "${workspaceFolder}/test-program",
+            "env": {},
+            "args": [],
+            "stopOnEntry": false,
+            "showLog": true,
+            "logOutput": "debugger"
+        }
+    ]
+}
