@@ -417,12 +417,22 @@
         ]
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "goDebugPro",
+          "title": "Go Debug Pro",
+          "icon": "$(debug-alt)"
+        }
+      ]
+    },
     "views": {
-      "debug": [
+      "goDebugPro": [
         {
           "id": "goDebugProConfigs",
-          "name": "Enhanced configuration",
-          "icon": "$(settings-gear)"
+          "name": "Debug Configurations",
+          "icon": "$(settings-gear)",
+          "contextualTitle": "Go Debug Pro Configurations"
         }
       ]
     },
