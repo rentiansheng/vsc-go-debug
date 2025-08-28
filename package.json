@@ -212,6 +212,16 @@
       ],
       "view/item/context": [
         {
+          "command": "goDebugPro.runDebugConfig",
+          "when": "view == goDebugProConfigs && viewItem == debugConfig",
+          "group": "inline@1"
+        },
+        {
+          "command": "goDebugPro.debugConfig",
+          "when": "view == goDebugProConfigs && viewItem == debugConfig",
+          "group": "inline@2"
+        },
+        {
           "command": "goDebugPro.editConfigurationWithEditor",
           "when": "view == goDebugProConfigs && viewItem == debugConfig",
           "group": "1_actions@1"
@@ -239,6 +249,21 @@
         {
           "command": "goDebugPro.restartRunConfig",
           "when": "view == goDebugProConfigs && viewItem == debugConfigRunning",
+          "group": "inline@1"
+        },
+        {
+          "command": "goDebugPro.restartDebugConfig",
+          "when": "view == goDebugProConfigs && viewItem == debugConfigRunning",
+          "group": "inline@2"
+        },
+        {
+          "command": "goDebugPro.terminateConfig",
+          "when": "view == goDebugProConfigs && viewItem == debugConfigRunning",
+          "group": "inline@3"
+        },
+        {
+          "command": "goDebugPro.restartRunConfig",
+          "when": "view == goDebugProConfigs && viewItem == debugConfigRunning",
           "group": "1_actions@1"
         },
         {
@@ -255,6 +280,11 @@
           "command": "goDebugPro.editConfigurationWithEditor",
           "when": "view == goDebugProConfigs && viewItem == debugConfigRunning",
           "group": "1_actions@4"
+        },
+        {
+          "command": "goDebugPro.runDebugConfiguration",
+          "when": "view == goDebugProRunConfigs && viewItem == runConfig",
+          "group": "inline@1"
         },
         {
           "command": "goDebugPro.runDebugConfiguration",
