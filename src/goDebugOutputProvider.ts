@@ -327,6 +327,9 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             overflow: hidden;
             background-color: var(--vscode-terminal-background);
             position: relative;
+            display: flex;
+            flex-direction: column;
+            min-height: 0; /* 允许flex子项收缩 */
         }
         
         .tab-content {
@@ -338,6 +341,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             word-wrap: break-word;
             display: none;
             flex-direction: column;
+            min-height: 0; /* 允许flex子项收缩 */
         }
         
         .tab-content.active {
@@ -399,7 +403,29 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         .output-content {
             flex: 1;
             overflow-y: auto;
+            overflow-x: hidden;
             padding: 10px;
+            min-height: 0; /* 允许flex子项收缩 */
+            max-height: 100%; /* 确保不超出容器 */
+            scroll-behavior: smooth; /* 平滑滚动 */
+        }
+        
+        /* 自定义滚动条样式，使其与VSCode主题匹配 */
+        .output-content::-webkit-scrollbar {
+            width: 10px;
+        }
+        
+        .output-content::-webkit-scrollbar-track {
+            background: var(--vscode-scrollbarSlider-background);
+        }
+        
+        .output-content::-webkit-scrollbar-thumb {
+            background: var(--vscode-scrollbarSlider-background);
+            border-radius: 5px;
+        }
+        
+        .output-content::-webkit-scrollbar-thumb:hover {
+            background: var(--vscode-scrollbarSlider-hoverBackground);
         }
         
         .empty-state {
@@ -411,7 +437,14 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         
         .log-line {
             margin-bottom: 2px;
-            line-height: 1.2;
+            line-height: 1.4;
+            word-break: break-word; /* 长单词换行 */
+            white-space: pre-wrap; /* 保持空格和换行 */
+        }
+        
+        /* 为输出内容添加一些间距和样式 */
+        .output-content .log-line:last-child {
+            margin-bottom: 10px; /* 最后一行底部留白 */
         }
     </style>
 </head>
@@ -573,16 +606,23 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
         
         function updateTabContent(tabName) {
-            const content = document.querySelector(\`[data-content="\${tabName}"]\`);
-            if (content && tabs.has(tabName)) {
+            const tabContent = document.querySelector(\`[data-content="\${tabName}"]\`);
+            if (tabContent && tabs.has(tabName)) {
+                const outputContent = tabContent.querySelector('.output-content');
                 const messages = tabs.get(tabName);
+                
                 if (messages.length > 0) {
-                    content.innerHTML = messages.map(msg => 
+                    // 更新输出内容
+                    outputContent.innerHTML = messages.map(msg => 
                         \`<div class="log-line">\${msg}</div>\`
                     ).join('');
-                    content.scrollTop = content.scrollHeight;
+                    
+                    // 自动滚动到底部，显示最新输出
+                    setTimeout(() => {
+                        outputContent.scrollTop = outputContent.scrollHeight;
+                    }, 10);
                 } else {
-                    content.innerHTML = '<div class="empty-state">No debug output yet for this configuration.</div>';
+                    outputContent.innerHTML = '<div class="empty-state">No debug output yet for this configuration.</div>';
                 }
             }
         }
