@@ -59,7 +59,7 @@ export class ConditionalBreakpointManager {
                     hitCount: 0
                 });
 
-                vscode.window.showInformationMessage(`Conditional breakpoint set: ${condition}`);
+                //vscode.window.showInformationMessage(`Conditional breakpoint set: ${condition}`);
             }
         }
     }
@@ -90,7 +90,7 @@ export class ConditionalBreakpointManager {
             );
             vscode.debug.addBreakpoints([breakpoint]);
 
-            vscode.window.showInformationMessage(`Logpoint set: ${logMessage}`);
+            //vscode.window.showInformationMessage(`Logpoint set: ${logMessage}`);
         }
     }
 

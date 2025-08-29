@@ -173,6 +173,11 @@
         "command": "goDebugPro.deleteConfig",
         "title": "Delete Configuration",
         "icon": "$(trash)"
+      },
+      {
+        "command": "goDebugPro.copyGoDebugOutput",
+        "title": "Copy Go Debug Output",
+        "icon": "$(copy)"
       }
     ],
     "menus": {
@@ -329,6 +334,13 @@
           "command": "goDebugPro.addWatchExpression",
           "when": "debugType == 'go-debug-pro'"
         }
+      ],
+      "output/context": [
+        {
+          "command": "goDebugPro.copyGoDebugOutput",
+          "when": "resourceFilename == 'Go Debug Pro'",
+          "group": "navigation"
+        }
       ]
     },
     "debuggers": [
@@ -424,6 +436,13 @@
           "title": "Go Debug Pro",
           "icon": "$(debug-alt)"
         }
+      ],
+      "panel": [
+        {
+          "id": "goDebugPanel",
+          "title": "Go Debug",
+          "icon": "$(debug-alt)"
+        }
       ]
     },
     "views": {
@@ -433,6 +452,15 @@
           "name": "Debug Configurations",
           "icon": "$(settings-gear)",
           "contextualTitle": "Go Debug Pro Configurations"
+        }
+      ],
+      "goDebugPanel": [
+        {
+          "id": "goDebugOutput",
+          "name": "Go Debug Output",
+          "type": "webview",
+          "icon": "$(output)",
+          "contextualTitle": "Go Debug Pro Output"
         }
       ]
     },

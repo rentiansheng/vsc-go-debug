@@ -142,7 +142,6 @@ export class DebugConfigurationProvider implements vscode.TreeDataProvider<Debug
         fs.writeFileSync(launchJsonPath, JSON.stringify(launchConfig, null, 4));
         
         this.refresh();
-        vscode.window.showInformationMessage(`Debug configuration "${name}" created successfully`);
     }
 
     public async editConfiguration(item: DebugConfigItem): Promise<void> {

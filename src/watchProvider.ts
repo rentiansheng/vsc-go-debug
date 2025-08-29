@@ -51,7 +51,6 @@ export class WatchExpressionProvider implements vscode.TreeDataProvider<WatchExp
             }
             
             this._onDidChangeTreeData.fire();
-            vscode.window.showInformationMessage(`Added watch expression: ${expression}`);
         }
     }
 

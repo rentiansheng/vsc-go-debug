@@ -114,10 +114,6 @@ export class ConfigurationEditorProvider {
         // 写入文件
         fs.writeFileSync(launchJsonPath, JSON.stringify(launchConfig, null, 2));
         
-        vscode.window.showInformationMessage(
-            `Configuration "${cleanConfig.name}" ${isEdit ? 'updated' : 'created'} successfully`
-        );
-
         // 关闭编辑器
         if (ConfigurationEditorProvider.currentPanel) {
             ConfigurationEditorProvider.currentPanel.dispose();
@@ -142,7 +138,7 @@ export class ConfigurationEditorProvider {
         );
 
         if (success) {
-            vscode.window.showInformationMessage(`Testing configuration: ${config.name}`);
+            //vscode.window.showInformationMessage(`Testing configuration: ${config.name}`);
         } else {
             vscode.window.showErrorMessage(`Failed to test configuration: ${config.name}`);
         }

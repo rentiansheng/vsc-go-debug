@@ -39,7 +39,7 @@ export class RunConfigWebviewProvider {
                                 configItem.configuration.name
                             );
                             if (success) {
-                                vscode.window.showInformationMessage(`Started: ${configItem.configuration.name}`);
+                                //vscode.window.showInformationMessage(`Started: ${configItem.configuration.name}`);
                             } else {
                                 vscode.window.showErrorMessage(`Failed to start: ${configItem.configuration.name}`);
                             }

@@ -289,7 +289,7 @@ export class RunConfigurationManager implements vscode.TreeDataProvider<RunConfi
         );
 
         if (success) {
-            vscode.window.showInformationMessage(`Started debugging: ${item.configuration.name}`);
+            // Debug session started - notification will be handled by the output panel
         } else {
             vscode.window.showErrorMessage(`Failed to start debugging: ${item.configuration.name}`);
         }
@@ -357,7 +357,6 @@ export class RunConfigurationManager implements vscode.TreeDataProvider<RunConfi
                 
                 fs.writeFileSync(launchJsonPath, JSON.stringify(launchConfig, null, 2));
                 
-                vscode.window.showInformationMessage(`Configuration "${configName}" deleted successfully`);
                 this.refresh();
             }
         } catch (error) {

@@ -134,7 +134,7 @@ export class QuickConfigurationProvider implements vscode.TreeDataProvider<Quick
         );
 
         if (success) {
-            vscode.window.showInformationMessage(`Started debugging: ${config.name}`);
+            // Debug session started - notification will be handled by the output panel
         } else {
             vscode.window.showErrorMessage(`Failed to start debugging: ${config.name}`);
         }

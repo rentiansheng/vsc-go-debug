@@ -525,6 +525,5 @@ export class GoDebugConfigurationProvider implements vscode.DebugConfigurationPr
         // 写入文件
         fs.writeFileSync(launchJsonPath, JSON.stringify(launchConfig, null, 2));
         
-        vscode.window.showInformationMessage(`Configuration "${config.name}" created successfully`);
     }
 }

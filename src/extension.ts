@@ -16,6 +16,7 @@ import { RunConfigWebviewProvider } from './runConfigWebview';
 import { GoDebugConfigurationProvider as GoDebugConfigProvider } from './goDebugConfigurationProvider';
 import { ConfigurationEditorProvider } from './configurationEditorProvider';
 import { QuickConfigurationProvider } from './quickConfigurationProvider';
+import { GoDebugOutputProvider } from './goDebugOutputProvider';
 
 interface RunningConfig {
 	mode: 'run' | 'debug';
@@ -28,6 +29,7 @@ interface RunningConfig {
 
 // Global variables
 let globalDebugConfigProvider: DebugConfigurationProvider | undefined;
+let globalGoDebugOutputProvider: GoDebugOutputProvider | undefined;
 
 // Debug logging utility
 class DebugLogger {
@@ -488,7 +490,6 @@ async function runDebugConfiguration(configItem: any, mode: 'run' | 'debug'): Pr
 			// Optional: Clean up binary after execution (uncomment if desired)
 			
 			outputChannel.appendLine(`✅ 4-step build and run process completed`);
-			vscode.window.showInformationMessage(`Building and running: ${safeOriginalConfig.name}`);
 			
 		} else {
 			// For debug mode, use the existing debug session approach with enhanced environment handling
@@ -514,7 +515,6 @@ async function runDebugConfiguration(configItem: any, mode: 'run' | 'debug'): Pr
 			
 			if (success) {
 				outputChannel.appendLine(`✅ Debug session started successfully`);
-				vscode.window.showInformationMessage(`Debug session started for: ${safeOriginalConfig.name}`);
 			} else {
 				const errorMsg = `Failed to start debug session for configuration: ${safeOriginalConfig.name}`;
 				outputChannel.appendLine(`❌ ${errorMsg}`);
@@ -570,6 +570,16 @@ function generateGoCommand(config: any, mode: 'run' | 'debug'): string {
 	}
 	
 	return command;
+}
+
+// Helper function to log to both output channel and debug panel
+function logToDebugOutput(message: string, outputChannel?: vscode.OutputChannel) {
+	if (outputChannel) {
+		outputChannel.appendLine(message);
+	}
+	if (globalGoDebugOutputProvider) {
+		globalGoDebugOutputProvider.addOutput(message);
+	}
 }
 
 // Helper functions for context menu commands
@@ -733,6 +743,13 @@ export function activate(context: vscode.ExtensionContext) {
 		treeDataProvider: runConfigManager,
 		showCollapseAll: true
 	});
+
+	// Register Go Debug Output Panel webview provider
+	const goDebugOutputProvider = new GoDebugOutputProvider(context.extensionUri);
+	globalGoDebugOutputProvider = goDebugOutputProvider; // Set global reference
+	context.subscriptions.push(
+		vscode.window.registerWebviewViewProvider('goDebugOutput', goDebugOutputProvider)
+	);
 
 	// Register debug adapter factory
 	const factory = new GoDebugAdapterDescriptorFactory();
@@ -916,6 +933,26 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
+	// Copy Go Debug Output Command
+	context.subscriptions.push(
+		vscode.commands.registerCommand('goDebugPro.copyGoDebugOutput', async () => {
+			// Get the Go Debug Pro output channel content
+			const debugInfo = `Go Debug Pro Output
+================
+Extension: Go Debug Pro
+Version: ${context.extension.packageJSON.version}
+Time: ${new Date().toLocaleString()}
+
+To view actual debug output, check the "Go Debug Pro" output channel in the Output panel.
+You can also check the debug console for runtime information.
+
+Recent debugging sessions and configuration details are logged to the output channel.`;
+			
+			await vscode.env.clipboard.writeText(debugInfo);
+			vscode.window.showInformationMessage('Go Debug Pro output information copied to clipboard!');
+		})
+	);
+
 	// Context Menu Commands for Go Files
 	context.subscriptions.push(
 		vscode.commands.registerCommand('goDebugPro.debugCurrentFile', async () => {
@@ -942,6 +979,23 @@ export function activate(context: vscode.ExtensionContext) {
 				console.log('Go Debug Pro session started');
 				watchProvider.onSessionStarted(session);
 				breakpointManager.onSessionStarted(session);
+				
+				// Create a tab for this configuration in the output panel
+				if (globalGoDebugOutputProvider && session.configuration?.name) {
+					globalGoDebugOutputProvider.createTab(session.configuration.name);
+					globalGoDebugOutputProvider.addOutput(
+						`🚀 Debug session started for: ${session.configuration.name}`,
+						session.configuration.name
+					);
+					
+					// Show the Go Debug output panel and focus on it
+					vscode.commands.executeCommand('workbench.view.extension.goDebugPanel').then(() => {
+						// Small delay to ensure panel is shown before focusing the view
+						setTimeout(() => {
+							vscode.commands.executeCommand('goDebugOutput.focus');
+						}, 100);
+					});
+				}
 			}
 		})
 	);
@@ -952,6 +1006,14 @@ export function activate(context: vscode.ExtensionContext) {
 				console.log('Go Debug Pro session terminated');
 				watchProvider.onSessionTerminated(session);
 				breakpointManager.onSessionTerminated(session);
+				
+				// Add termination message to the tab
+				if (globalGoDebugOutputProvider && session.configuration?.name) {
+					globalGoDebugOutputProvider.addOutput(
+						`🛑 Debug session terminated for: ${session.configuration.name}`,
+						session.configuration.name
+					);
+				}
 			}
 		})
 	);
@@ -972,6 +1034,14 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 		})
 	);
+
+	// Initialize configurations for the debug output panel
+	setTimeout(() => {
+		if (globalGoDebugOutputProvider) {
+			globalGoDebugOutputProvider.refreshConfigurations();
+			// Don't create any default output - let it start empty
+		}
+	}, 1000);
 }
 
 // Debug Configuration Provider (Legacy)
@@ -1163,6 +1233,24 @@ async function executeRunWithDedicatedTerminal(
 		const buildStartTime = Date.now();
 		DebugLogger.info(`Starting RUN build process with command: go ${buildCommand}`, outputChannel);
 		DebugLogger.info(`RUN build process starting at: ${new Date().toISOString()}`, outputChannel);
+		
+		// Create tab for this configuration in the output panel early
+		if (globalGoDebugOutputProvider) {
+			globalGoDebugOutputProvider.createTab(safeOriginalConfig.name);
+			globalGoDebugOutputProvider.addOutput(
+				`🔨 Starting build for: ${safeOriginalConfig.name}`,
+				safeOriginalConfig.name
+			);
+			
+			// Show the Go Debug output panel and focus on it
+			vscode.commands.executeCommand('workbench.view.extension.goDebugPanel').then(() => {
+				// Small delay to ensure panel is shown before focusing the view
+				setTimeout(() => {
+					vscode.commands.executeCommand('goDebugOutput.focus');
+				}, 100);
+			});
+		}
+		
 		const buildProcess = cp.spawn('go', buildArgs, {
 			cwd: sourceDir,
 			stdio: ['pipe', 'pipe', 'pipe']
@@ -1171,13 +1259,31 @@ async function executeRunWithDedicatedTerminal(
 		buildProcess.stdout?.on('data', (data) => {
 			const output = data.toString();
 			outputChannel.append(output);
-			// dedicatedTerminal.sendText(`echo "${output.replace(/"/g, '\\"')}"`);
+			
+			// Send build output to the dedicated tab
+			if (globalGoDebugOutputProvider) {
+				const lines = output.split('\n');
+				lines.forEach((line: string) => {
+					if (line.trim()) {
+						globalGoDebugOutputProvider!.addOutput(`🔨 ${line}`, safeOriginalConfig.name);
+					}
+				});
+			}
 		});
 		
 		buildProcess.stderr?.on('data', (data) => {
 			const error = data.toString();
 			outputChannel.append(error);
-			// dedicatedTerminal.sendText(`echo "❌ ${error.replace(/"/g, '\\"')}"`);
+			
+			// Send build errors to the dedicated tab
+			if (globalGoDebugOutputProvider) {
+				const lines = error.split('\n');
+				lines.forEach((line: string) => {
+					if (line.trim()) {
+						globalGoDebugOutputProvider!.addOutput(`❌ Build Error: ${line}`, safeOriginalConfig.name);
+					}
+				});
+			}
 		});
 		
 		await new Promise<void>((resolve, reject) => {
@@ -1186,12 +1292,26 @@ async function executeRunWithDedicatedTerminal(
 				if (code === 0) {
 					DebugLogger.info(`RUN build completed successfully in ${buildDuration}ms`, outputChannel);
 					outputChannel.appendLine(`✅ Build completed successfully`);
-					// dedicatedTerminal.sendText(`echo "✅ Build completed successfully"`);
+					
+					// Send build success to the dedicated tab
+					if (globalGoDebugOutputProvider) {
+						globalGoDebugOutputProvider.addOutput(
+							`✅ Build completed successfully in ${buildDuration}ms`,
+							safeOriginalConfig.name
+						);
+					}
 					resolve();
 				} else {
 					const errorMsg = `Build failed with exit code ${code}`;
 					outputChannel.appendLine(`❌ ${errorMsg}`);
-					// dedicatedTerminal.sendText(`echo "❌ ${errorMsg}"`);
+					
+					// Send build failure to the dedicated tab
+					if (globalGoDebugOutputProvider) {
+						globalGoDebugOutputProvider.addOutput(
+							`❌ ${errorMsg}`,
+							safeOriginalConfig.name
+						);
+					}
 					reject(new Error(errorMsg));
 				}
 			});
@@ -1250,23 +1370,68 @@ async function executeRunWithDedicatedTerminal(
 		
 		DebugLogger.info(`RUN process started with PID: ${runProcess.pid}`, outputChannel);
 		
+		// Add execution start message to the existing tab (tab was created during build)
+		if (globalGoDebugOutputProvider) {
+			globalGoDebugOutputProvider.addOutput(
+				`🚀 Execution started (PID: ${runProcess.pid})`,
+				safeOriginalConfig.name
+			);
+		}
+		
 		// Redirect process output to terminal and output channel
 		runProcess.stdout?.on('data', (data) => {
 			const output = data.toString();
 			outputChannel.append(output);
-			// Send to terminal without echo command to show raw output
-			// dedicatedTerminal.sendText(output.replace(/\n$/, ''));
+			
+			// Send output to the dedicated tab
+			if (globalGoDebugOutputProvider) {
+				// Split output by lines and send each line
+				const lines = output.split('\n');
+				lines.forEach((line: string) => {
+					if (line.trim()) {
+						globalGoDebugOutputProvider!.addOutput(line, safeOriginalConfig.name);
+					}
+				});
+			}
 		});
 		
 		runProcess.stderr?.on('data', (data) => {
 			const error = data.toString();
 			outputChannel.append(error);
-			// dedicatedTerminal.sendText(error.replace(/\n$/, ''));
+			
+			// Send error output to the dedicated tab
+			if (globalGoDebugOutputProvider) {
+				const lines = error.split('\n');
+				lines.forEach((line: string) => {
+					if (line.trim()) {
+						globalGoDebugOutputProvider!.addOutput(`❌ ${line}`, safeOriginalConfig.name);
+					}
+				});
+			}
+		});
+		
+		// Handle process completion
+		runProcess.on('exit', (code, signal) => {
+			const runDuration = Date.now() - runStartTime;
+			const exitMessage = signal 
+				? `Process terminated by signal ${signal} after ${runDuration}ms` 
+				: `Process exited with code ${code} after ${runDuration}ms`;
+			
+			outputChannel.appendLine(`\n${exitMessage}`);
+			
+			if (globalGoDebugOutputProvider) {
+				globalGoDebugOutputProvider.addOutput(
+					code === 0 ? `✅ ${exitMessage}` : `❌ ${exitMessage}`,
+					safeOriginalConfig.name
+				);
+			}
+			
+			// Mark configuration as no longer running
+			stateManager.setConfigStopped(safeOriginalConfig.name);
 		});
 		
 		outputChannel.appendLine(`✅ Process started with PID: ${runProcess.pid}`);
 		// dedicatedTerminal.sendText(`echo "✅ Process started with PID: ${runProcess.pid}"`);
-		vscode.window.showInformationMessage(`Running: ${safeOriginalConfig.name} (PID: ${runProcess.pid})`);
 		
 	} catch (error) {
 		const errorMsg = `Failed to execute run configuration: ${error}`;
