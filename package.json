@@ -28,7 +28,7 @@
     "visual editor"
   ],
   "engines": {
-    "vscode": "^1.103.0"
+    "vscode": "^1.85.0"
   },
   "categories": [
     "Debuggers",
@@ -156,7 +156,7 @@
       },
       {
         "command": "goDebugPro.restartDebugConfig",
-        "title": "Restart Debug", 
+        "title": "Restart Debug",
         "icon": "$(debug-restart)"
       },
       {
@@ -490,7 +490,7 @@
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
-    "@types/vscode": "^1.103.0",
+    "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^8.39.0",
     "@typescript-eslint/parser": "^8.39.0",
     "@vscode/test-cli": "^0.0.11",

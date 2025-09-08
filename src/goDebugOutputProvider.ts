@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { GlobalStateManager, ConfigState, StateChangeEvent } from './globalStateManager';
+import { runDebugConfiguration } from './extension';
 
 export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'goDebugOutput';
@@ -15,17 +16,115 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     constructor(private readonly _extensionUri: vscode.Uri) {
         // 初始化全局状态管理器
         this.globalStateManager = GlobalStateManager.getInstance();
-        
+
+ 
         // 监听状态变化事件
         this.stateChangeListener = this.globalStateManager.onStateChange((event: StateChangeEvent) => {
             console.log(`[GoDebugOutputProvider] State change event for ${event.configName}:`, event);
+            
+            // 立即更新对应配置的工具栏状态
             this.updateToolbarState(event.configName);
+            
+            // 更新状态显示字段
+            this.updateStateDisplayFields(event.configName, event.newState);
+            
+            // 如果配置正在运行，确保有对应的tab存在
+            if (event.newState.state === 'running' && !this._outputTabs.has(event.configName)) {
+                this.createTab(event.configName);
+            }
+            
+            // 添加详细的状态变化输出日志，包含更多字段信息
+            const oldStateInfo = event.oldState ? 
+                `[${event.oldState.action}:${event.oldState.state}]` : '[无状态]';
+            const newStateInfo = `[${event.newState.action}:${event.newState.state}]`;
+            const processInfo = event.newState.process ? 
+                ` (PID: ${event.newState.process.pid || 'N/A'})` : '';
+            const timeInfo = ` at ${event.timestamp.toLocaleTimeString()}`;
+            
+            const statusMessage = `🔄 状态变化: ${oldStateInfo} → ${newStateInfo}${processInfo}${timeInfo}`;
+            this.addOutput(statusMessage, event.configName);
+            
+            // 根据新状态显示不同的信息
+            if (event.newState.state === 'running') {
+                const startMessage = event.newState.action === 'debug' ? 
+                    `🚀 调试会话已启动` : `🚀 运行会话已启动`;
+                this.addOutput(startMessage, event.configName);
+            } else if (event.newState.state === 'stopped') {
+                const stopMessage = event.newState.action === 'debug' ? 
+                    `⏹️ 调试会话已停止` : `⏹️ 运行会话已停止`;
+                this.addOutput(stopMessage, event.configName);
+            } else if (event.newState.state === 'starting') {
+                this.addOutput(`⏳ 正在启动${event.newState.action === 'debug' ? '调试' : '运行'}会话...`, event.configName);
+            }
+            
+            // 更新所有相关的UI组件
+            this.updateStateDisplayFields(event.configName, event.newState);
         });
         
         // Don't create default tab anymore
         this.loadConfigurations();
         this.setupFileWatcher();
         this.setupDebugSessionListeners();
+        
+        // 设置定期状态同步
+        this.setupPeriodicStateSync();
+        
+        // 设置持续时间更新定时器
+        this.setupDurationUpdateTimer();
+    }
+    
+    private setupDurationUpdateTimer(): void {
+        // 每秒更新运行时间显示
+        setInterval(() => {
+            if (this._view) {
+                const runningConfigs = this.globalStateManager.getRunningConfigs();
+                runningConfigs.forEach(config => {
+                    if (config.state === 'running') {
+                        this._view!.webview.postMessage({
+                            command: 'updateDuration',
+                            tabName: config.name,
+                            startTime: config.startTime
+                        });
+                    }
+                });
+            }
+        }, 1000);
+    }
+    
+    private setupPeriodicStateSync(): void {
+        // 每5秒检查一次状态同步
+        setInterval(() => {
+            this.syncWithActiveDebugSessions();
+            
+            // 检查所有已知的tab是否有正确的工具栏状态
+            for (const tabName of this._outputTabs.keys()) {
+                this.updateToolbarState(tabName);
+            }
+        }, 5000);
+        
+        // 每秒更新运行时间显示
+        setInterval(() => {
+            this.updateRunningDurations();
+        }, 1000);
+    }
+    
+    /**
+     * 更新所有运行中配置的持续时间显示
+     */
+    private updateRunningDurations(): void {
+        const allStates = this.globalStateManager.getAllStates();
+        for (const [configName, state] of allStates.entries()) {
+            if (state.state === 'running' && state.startTime) {
+                const duration = this.calculateDuration(state.startTime);
+                if (this._view && duration) {
+                    this._view.webview.postMessage({
+                        command: 'updateDuration',
+                        tabName: configName,
+                        duration: duration
+                    });
+                }
+            }
+        }
     }
 
     public resolveWebviewView(
@@ -37,9 +136,9 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
 
         webviewView.webview.options = {
             enableScripts: true,
-            localResourceRoots: [this._extensionUri]
+            localResourceRoots: [this._extensionUri],
         };
-
+      
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
         // Update all toolbar states after content is loaded
@@ -49,8 +148,11 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
 
         // Set up delayed configuration refresh
         setTimeout(() => {
-            console.log('Delayed configuration refresh');
-            this.loadConfigurations();
+            console.log('[GoDebugOutputProvider] Delayed configuration refresh');
+            this.loadConfigurations().then(() => {
+                // 加载完配置后，创建对应的标签页
+                this.createTabsForConfigurations();
+            });
         }, 1000);
 
         webviewView.webview.onDidReceiveMessage(
@@ -66,13 +168,13 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     }
 
     private async loadConfigurations(): Promise<void> {
-        console.log('Loading configurations...');
+        console.log('[loadConfigurations] Starting configuration loading...');
         this._configurations = [];
         
         if (vscode.workspace.workspaceFolders) {
             for (const folder of vscode.workspace.workspaceFolders) {
                 const launchJsonPath = path.join(folder.uri.fsPath, '.vscode', 'launch.json');
-                console.log('Checking launch.json at:', launchJsonPath);
+                console.log('[loadConfigurations] Checking launch.json at:', launchJsonPath);
                 
                 if (fs.existsSync(launchJsonPath)) {
                     try {
@@ -80,26 +182,44 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                         const launch = JSON.parse(content);
                         
                         if (launch.configurations && Array.isArray(launch.configurations)) {
-                            console.log('Found configurations:', launch.configurations.length);
-                            const goDebugProConfigs = launch.configurations.filter(
-                                (config: any) => config.type === 'go-debug-pro'
+                            console.log('[loadConfigurations] Found configurations:', launch.configurations.length);
+                            
+                            // 加载所有 go-debug-pro 和 go 类型的配置
+                            const goConfigs = launch.configurations.filter(
+                                (config: any) => config.type === 'go-debug-pro' || config.type === 'go'
                             );
-                            console.log('Go Debug Pro configurations:', goDebugProConfigs.length);
-                            this._configurations.push(...goDebugProConfigs);
+                            
+                            console.log('[loadConfigurations] Go configurations (go-debug-pro + go):', goConfigs.length);
+                            console.log('[loadConfigurations] Go config names:', goConfigs.map((c: any) => c.name));
+                            
+                            this._configurations.push(...goConfigs);
                         }
                     } catch (error) {
-                        console.error('Error reading launch.json:', error);
+                        console.error('[loadConfigurations] Error reading launch.json:', error);
                     }
                 } else {
-                    console.log('launch.json does not exist at:', launchJsonPath);
+                    console.log('[loadConfigurations] launch.json does not exist at:', launchJsonPath);
                 }
             }
         } else {
-            console.log('No workspace folders found');
+            console.log('[loadConfigurations] No workspace folders found');
         }
         
-        console.log('Total configurations loaded:', this._configurations.length);
-        // No need to update webview here since it's just configuration loading
+        console.log('[loadConfigurations] Total configurations loaded:', this._configurations.length);
+        console.log('[loadConfigurations] Configuration names:', this._configurations.map(c => c.name));
+    }
+
+    private createTabsForConfigurations(): void {
+        console.log('[createTabsForConfigurations] Creating tabs for loaded configurations...');
+        
+        this._configurations.forEach(config => {
+            if (!this._outputTabs.has(config.name)) {
+                console.log(`[createTabsForConfigurations] Creating tab for: ${config.name}`);
+                this.createTab(config.name);
+            }
+        });
+        
+        console.log(`[createTabsForConfigurations] Total tabs created: ${this._outputTabs.size}`);
     }
 
     private setupFileWatcher(): void {
@@ -120,8 +240,17 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         vscode.debug.onDidStartDebugSession((session) => {
             console.log('[Go Debug Output] Debug session started:', session.name, session.type);
             if (session.type === 'go-debug-pro') {
+                // 确保创建对应的tab
+                if (!this._outputTabs.has(session.name)) {
+                    this.createTab(session.name);
+                }
+                
+                // 设置调试状态
                 this.setSessionInfo(session.name, 'debug', 'running');
                 this.addOutput(`🚀 Debug session started: ${session.name}`, session.name);
+                
+                // 立即更新工具栏状态
+                setTimeout(() => this.updateToolbarState(session.name), 100);
             }
         });
 
@@ -131,6 +260,9 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             if (session.type === 'go-debug-pro') {
                 this.setSessionInfo(session.name, 'debug', 'stopped');
                 this.addOutput(`🛑 Debug session terminated: ${session.name}`, session.name);
+                
+                // 立即更新工具栏状态
+                setTimeout(() => this.updateToolbarState(session.name), 100);
             }
         });
 
@@ -138,7 +270,8 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         vscode.debug.onDidChangeActiveDebugSession((session) => {
             if (session && session.type === 'go-debug-pro') {
                 console.log('[Go Debug Output] Active debug session changed:', session.name);
-                this.setSessionInfo(session.name, 'debug', 'running');
+                // 更新所有工具栏状态，确保UI反映当前状态
+                setTimeout(() => this.updateAllToolbarStates(), 100);
             }
         });
     }
@@ -163,6 +296,8 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         
         this._updateWebview(tabName, logEntry);
     }
+
+
 
     public clearOutput(tabName?: string) {
         if (tabName && this._outputTabs.has(tabName)) {
@@ -208,7 +343,9 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 if (!configState || configState.state === 'stopped') {
                     this.addOutput(`Starting ${tabName}...`, tabName);
                     this.globalStateManager.setState(tabName, 'run', 'starting');
-                    await this.executeRun(tabName);
+                    await this.executeRun(tabName, "run");
+                } else {
+                    this.addOutput("not can run. proccess is run", tabName);
                 }
                 break;
             case 'stop':
@@ -219,7 +356,8 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 break;
             case 'restart':
                 this.addOutput(`Restarting ${tabName}...`, tabName);
-                await this.restartSession(tabName);
+                // TODO: 
+                await this.restartSession(tabName, "run");
                 break;
             case 'continue':
                 if (configState?.action === 'debug') {
@@ -244,15 +382,20 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async executeRun(tabName: string) {
+    private async executeRun(tabName: string, mode: string) {
+        console.log(`[executeRun] Looking for configuration: "${tabName}"`);
+        console.log(`[executeRun] Available configurations:`, this._configurations.map(c => c.name));
+        
         // Find configuration and execute it
         const config = this._configurations.find(c => c.name === tabName);
         if (config) {
-            const sessionType: 'debug' | 'run' = config.mode === 'exec' ? 'run' : 'debug';
+            console.log(`[executeRun] Found configuration:`, config);
+            const sessionType: 'debug' | 'run' =  mode === 'run' ? 'run' : 'debug';
             
             // 创建标签页（如果不存在）
             if (!this._outputTabs.has(tabName)) {
                 this.createTab(tabName);
+                
             }
             
             // 设置为启动状态
@@ -260,23 +403,22 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             this.addOutput(`🚀 Starting ${sessionType} session: ${tabName}`, tabName);
             
             try {
-                // 执行调试/运行命令
-                const success = await vscode.commands.executeCommand('vscode.startDebugging', undefined, config);
-                if (success) {
-                    console.log(`[Go Debug Output] Successfully started ${sessionType} for ${tabName}`);
-                    this.globalStateManager.setState(tabName, sessionType, 'running');
-                } else {
-                    console.log(`[Go Debug Output] Failed to start ${sessionType} for ${tabName}`);
-                    this.globalStateManager.setState(tabName, sessionType, 'stopped');
-                    this.addOutput(`❌ Failed to start ${sessionType} session: ${tabName}`, tabName);
-                }
+                // 使用现有的封装函数执行调试/运行
+                await runDebugConfiguration(config, sessionType);
+                
+                console.log(`[executeRun] Successfully started ${sessionType} for ${tabName}`);
+                this.globalStateManager.setState(tabName, sessionType, 'running');
+                this.addOutput(`✅ Successfully started ${sessionType} session: ${tabName}`, tabName);
             } catch (error) {
-                console.error(`[Go Debug Output] Error starting ${sessionType} for ${tabName}:`, error);
+                console.error(`[executeRun] Error starting ${sessionType} for ${tabName}:`, error);
                 this.globalStateManager.setState(tabName, sessionType, 'stopped');
                 this.addOutput(`❌ Error starting ${sessionType} session: ${error}`, tabName);
             }
         } else {
+            console.error(`[executeRun] Configuration not found: "${tabName}"`);
+            console.error(`[executeRun] Available configurations: [${this._configurations.map(c => `"${c.name}"`).join(', ')}]`);
             this.addOutput(`❌ Configuration not found: ${tabName}`, tabName);
+            this.addOutput(`Available configurations: ${this._configurations.map(c => c.name).join(', ')}`, tabName);
         }
     }
 
@@ -286,30 +428,27 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             this.addOutput(`🛑 Stopping session: ${tabName}`, tabName);
             
             if (configState.action === 'debug') {
-                // Stop debug session
+                // Stop debug session using VS Code command
                 vscode.commands.executeCommand('workbench.action.debug.stop');
-            } else if (configState.process) {
-                // Stop managed process
-                configState.process.kill('SIGTERM');
-                setTimeout(() => {
-                    if (configState.process && !configState.process.killed) {
-                        configState.process.kill('SIGKILL');
-                    }
-                }, 3000);
             }
             
-            this.globalStateManager.setState(tabName, configState.action, 'stopped');
+            // Use global state manager to stop the configuration
+            this.globalStateManager.stopConfig(tabName);
+            
+            this.addOutput(`✅ Successfully stopped session: ${tabName}`, tabName);
+        } else {
+            this.addOutput(`⚠️ Session ${tabName} is not running`, tabName);
         }
     }
 
-    private async restartSession(tabName: string) {
+    private async restartSession(tabName: string, mode: string) {
         await this.stopSession(tabName);
-        setTimeout(() => this.executeRun(tabName), 500);
+        setTimeout(() => this.executeRun(tabName, mode), 500);
     }
 
     private async executeDebug(tabName: string) {
         // executeDebug is the same as executeRun, the distinction is handled by the config type
-        await this.executeRun(tabName);
+        await this.executeRun(tabName, "run");
     }
 
     public setSessionInfo(tabName: string, type: 'debug' | 'run', status: 'running' | 'stopped', process?: any) {
@@ -336,6 +475,121 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             });
         } else {
             console.log(`[Go Debug Output] Cannot update toolbar - no webview available for ${tabName}`);
+        }
+    }
+
+    /**
+     * 更新状态显示字段 - 根据全局状态变化更新UI显示
+     */
+    private updateStateDisplayFields(configName: string, newState: ConfigState) {
+        // 发送状态字段更新消息到webview
+        if (this._view) {
+            // 使用 globalStateManager 的方法检查状态
+            const isStopped = this.globalStateManager.isStopped(configName);
+            const isRunning = this.globalStateManager.isRunning(configName);
+            
+            const stateDisplayInfo = {
+                configName: configName,
+                action: newState.action,
+                state: newState.state,
+                processId: newState.process?.pid || null,
+                startTime: newState.startTime?.toLocaleString() || null,
+                endTime: newState.endTime?.toLocaleString() || null,
+                duration: this.calculateDuration(newState.startTime, newState.endTime),
+                isActive: isRunning,
+                isStopped: isStopped,
+                // 根据状态生成显示文本
+                stateText: this.getStateDisplayText(newState.state),
+                // 状态颜色
+                stateColor: this.getStateColor(newState.state)
+            };
+            
+            console.log(`[GoDebugOutputProvider] Updating state display for ${configName}:`, stateDisplayInfo);
+            
+            this._view.webview.postMessage({
+                command: 'updateStateDisplay',
+                tabName: configName,
+                stateInfo: stateDisplayInfo
+            });
+            
+            // 同时更新标签页标题，显示运行状态
+            this.updateTabTitle(configName, newState);
+            this.updateToolbarState(configName);
+        }
+    }
+
+    /**
+     * 获取状态显示文本
+     */
+    private getStateDisplayText(state: string): string {
+        switch (state) {
+            case 'running':
+                return '运行中';
+            case 'stopped':
+                return '已停止';
+            case 'starting':
+                return '启动中';
+            case 'stopping':
+                return '停止中';
+            default:
+                return '未知状态';
+        }
+    }
+
+    /**
+     * 获取状态颜色
+     */
+    private getStateColor(state: string): string {
+        switch (state) {
+            case 'running':
+                return '#4CAF50'; // 绿色
+            case 'stopped':
+                return '#757575'; // 灰色
+            case 'starting':
+                return '#FF9800'; // 橙色
+            case 'stopping':
+                return '#F44336'; // 红色
+            default:
+                return '#757575'; // 默认灰色
+        }
+    }
+
+    /**
+     * 计算会话持续时间
+     */
+    private calculateDuration(startTime?: Date, endTime?: Date): string | null {
+        if (!startTime) {
+            return null;
+        }
+        
+        const end = endTime || new Date();
+        const duration = end.getTime() - startTime.getTime();
+        
+        if (duration < 1000) {
+            return `${duration}ms`;
+        } else if (duration < 60000) {
+            return `${Math.floor(duration / 1000)}s`;
+        } else {
+            const minutes = Math.floor(duration / 60000);
+            const seconds = Math.floor((duration % 60000) / 1000);
+            return `${minutes}m ${seconds}s`;
+        }
+    }
+
+    /**
+     * 更新标签页标题，显示运行状态
+     */
+    private updateTabTitle(configName: string, state: any) {
+        if (this._view) {
+            const statusIcon = state.state === 'running' ? '🟢' : 
+                             state.state === 'starting' ? '🟡' : '⚫';
+            const titleWithStatus = `${statusIcon} ${configName}`;
+            
+            this._view.webview.postMessage({
+                command: 'updateTabTitle',
+                tabName: configName,
+                newTitle: titleWithStatus
+            });
         }
     }
 
@@ -375,10 +629,18 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         // 首先检查当前活动的调试会话
         this.syncWithActiveDebugSessions();
         
-        // 然后发送工具栏状态更新给所有会话
+        // 然后发送工具栏状态更新给所有已知配置
         const allStates = this.globalStateManager.getAllStates();
         for (const [name, configState] of allStates.entries()) {
             this.updateToolbarState(name);
+        }
+        
+        // 同时也更新所有已创建的tabs，即使它们没有在全局状态中
+        for (const tabName of this._outputTabs.keys()) {
+            if (!allStates.has(tabName)) {
+                // 如果tab存在但没有状态，创建一个默认停止状态
+                this.updateToolbarState(tabName);
+            }
         }
     }
     
@@ -398,39 +660,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             }
         }
     }
-    
-    private getToolbarButtons(tabId: string, tab: any): string {
-        const configState = this.globalStateManager.getState(tabId);
-        const isDebugSession = configState?.action === 'debug';
-        const isRunning = configState?.state === 'running' || configState?.state === 'starting';
-        
-        let buttons = '';
-        
-        // Stop button (always available when session is running)
-        if (isRunning) {
-            buttons += `<button class="toolbar-button" data-action="stop" title="Stop">⏹️</button>`;
-        } else {
-            buttons += `<button class="toolbar-button" data-action="stop" title="Stop" disabled>⏹️</button>`;
-        }
-        
-        // Run/Rerun button
-        if (!isRunning) {
-            buttons += `<button class="toolbar-button" data-action="run" title="Run">▶️</button>`;
-        } else {
-            buttons += `<button class="toolbar-button" data-action="restart" title="Restart">🔄</button>`;
-        }
-        
-        // Debug-specific controls
-        if (isDebugSession && isRunning) {
-            buttons += `<div class="toolbar-separator"></div>`;
-            buttons += `<button class="toolbar-button" data-action="continue" title="Continue">▶️</button>`;
-            buttons += `<button class="toolbar-button" data-action="stepOver" title="Step Over">⤴️</button>`;
-            buttons += `<button class="toolbar-button" data-action="stepInto" title="Step Into">⤵️</button>`;
-            buttons += `<button class="toolbar-button" data-action="stepOut" title="Step Out">⤴️</button>`;
-        }
-        
-        return buttons;
-    }
+
 
     public dispose() {
         // 清理事件监听器
@@ -581,11 +811,59 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         .toolbar {
             display: flex;
             align-items: center;
+            justify-content: space-between;
             padding: 6px 10px;
             background-color: var(--vscode-sideBarSectionHeader-background);
             border-bottom: 1px solid var(--vscode-panel-border);
-            gap: 4px;
+            gap: 8px;
             flex-shrink: 0;
+        }
+        
+        .state-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+        }
+        
+        .state-badge {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        
+        .state-badge[data-state="running"] {
+            background-color: var(--vscode-terminal-ansiGreen);
+            color: var(--vscode-terminal-background);
+        }
+        
+        .state-badge[data-state="starting"] {
+            background-color: var(--vscode-terminal-ansiYellow);
+            color: var(--vscode-terminal-background);
+        }
+        
+        .state-badge[data-state="stopped"] {
+            background-color: var(--vscode-descriptionForeground);
+            color: var(--vscode-terminal-background);
+        }
+        
+        .state-badge[data-state="stopping"] {
+            background-color: var(--vscode-terminal-ansiRed);
+            color: var(--vscode-terminal-background);
+        }
+        
+        .duration-info {
+            color: var(--vscode-descriptionForeground);
+            font-size: 10px;
+            font-family: var(--vscode-editor-font-family);
+        }
+        
+        .toolbar-buttons {
+            display: flex;
+            align-items: center;
+            gap: 4px;
         }
         
         .toolbar-button {
@@ -722,14 +1000,20 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 toolbar.className = 'toolbar';
                 toolbar.setAttribute('data-tab', configName);
                 toolbar.innerHTML = \`
-                    <button class="toolbar-button" data-action="stop" title="Stop" disabled>⏹️</button>
-                    <button class="toolbar-button primary" data-action="run" title="Run">▶️</button>
-                    <button class="toolbar-button" data-action="restart" title="Restart" disabled>🔄</button>
-                    <div class="toolbar-separator"></div>
-                    <button class="toolbar-button" data-action="continue" title="Continue" disabled>▶️</button>
-                    <button class="toolbar-button" data-action="stepOver" title="Step Over" disabled>⤴️</button>
-                    <button class="toolbar-button" data-action="stepInto" title="Step Into" disabled>⤵️</button>
-                    <button class="toolbar-button" data-action="stepOut" title="Step Out" disabled>⤴️</button>
+                    <div class="state-info">
+                        <span class="state-badge" data-state="stopped">已停止</span>
+                        <span class="duration-info" style="display: none;"></span>
+                    </div>
+                    <div class="toolbar-buttons">
+                        <button class="toolbar-button" data-action="stop" title="Stop" disabled>⏹️</button>
+                        <button class="toolbar-button primary" data-action="run" title="Run">▶️</button>
+                        <button class="toolbar-button" data-action="restart" title="Restart" disabled>🔄</button>
+                        <div class="toolbar-separator"></div>
+                        <button class="toolbar-button" data-action="continue" title="Continue" disabled>▶️</button>
+                        <button class="toolbar-button" data-action="stepOver" title="Step Over" disabled>⤴️</button>
+                        <button class="toolbar-button" data-action="stepInto" title="Step Into" disabled>⤵️</button>
+                        <button class="toolbar-button" data-action="stepOut" title="Step Out" disabled>⤴️</button>
+                    </div>
                 \`;
                 
                 // Add event listeners to toolbar buttons
@@ -923,6 +1207,9 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 toolbarFound: !!toolbar
             });
             
+            // 更新状态显示
+            updateStateDisplayFromConfig(toolbar, tabName, configState);
+            
             // Update stop button - enabled when running
             const stopBtn = toolbar.querySelector('[data-action="stop"]');
             if (stopBtn) {
@@ -959,6 +1246,95 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 }
             });
         }
+        
+         
+        
+        // 计算持续时间的辅助函数
+        function calculateDurationJS(startTime, endTime) {
+            const start = new Date(startTime);
+            const end = endTime ? new Date(endTime) : new Date();
+            const duration = end.getTime() - start.getTime();
+            
+            if (duration < 1000) {
+                return \`\${duration}ms\`;
+            } else if (duration < 60000) {
+                return \`\${Math.floor(duration / 1000)}s\`;
+            } else {
+                const minutes = Math.floor(duration / 60000);
+                const seconds = Math.floor((duration % 60000) / 1000);
+                return \`\${minutes}m \${seconds}s\`;
+            }
+        }
+        
+        function updateStateDisplay(tabName, stateInfo) {
+            const toolbar = document.querySelector(\`[data-tab="\${tabName}"]\`);
+            if (!toolbar) {
+                console.warn(\`Toolbar not found for state update: \${tabName}\`);
+                return;
+            }
+            
+            console.log(\`[JS] Updating state display for \${tabName}:\`, stateInfo);
+            
+            // Update state badge
+            const stateBadge = toolbar.querySelector('.state-badge');
+            if (stateBadge) {
+                // 使用 stateInfo.isStopped 来决定显示状态
+                if (stateInfo.isStopped) {
+                    stateBadge.setAttribute('data-state', 'stopped');
+                    stateBadge.textContent = '已停止';
+                    stateBadge.style.backgroundColor = '#757575';
+                } else if (stateInfo.isActive) {
+                    stateBadge.setAttribute('data-state', 'running');
+                    const badgeText = stateInfo.action === 'debug' ? '调试中' : '运行中';
+                    stateBadge.textContent = stateInfo.processId ? 
+                        \`\${badgeText} (PID: \${stateInfo.processId})\` : badgeText;
+                    stateBadge.style.backgroundColor = '#4CAF50';
+                } else {
+                    // 根据具体状态设置
+                    stateBadge.setAttribute('data-state', stateInfo.state);
+                    let badgeText = stateInfo.stateText || stateInfo.state;
+                    if (stateInfo.processId && stateInfo.state !== 'stopped') {
+                        badgeText += \` (PID: \${stateInfo.processId})\`;
+                    }
+                    stateBadge.textContent = badgeText;
+                    stateBadge.style.backgroundColor = stateInfo.stateColor || '#757575';
+                }
+                
+                console.log(\`[JS] State badge updated for \${tabName}: \${stateBadge.textContent}\`);
+            }
+            
+            // Update duration info
+            const durationInfo = toolbar.querySelector('.duration-info');
+            if (durationInfo && stateInfo.duration) {
+                durationInfo.textContent = \`运行时长: \${stateInfo.duration}\`;
+                durationInfo.style.display = stateInfo.isActive ? 'inline' : 'none';
+            } else if (durationInfo) {
+                durationInfo.style.display = 'none';
+            }
+            
+            console.log(\`[JS] Updated state display for \${tabName}:\`, stateInfo);
+        }
+        
+        function updateTabTitle(tabName, newTitle) {
+            const tab = document.querySelector(\`[data-tab="\${tabName}"]\`);
+            if (tab) {
+                const titleSpan = tab.querySelector('span:first-child');
+                if (titleSpan) {
+                    titleSpan.textContent = newTitle;
+                }
+            }
+        }
+        
+        function updateDuration(tabName, duration) {
+            const toolbar = document.querySelector(\`[data-tab="\${tabName}"]\`);
+            if (toolbar) {
+                const durationInfo = toolbar.querySelector('.duration-info');
+                if (durationInfo) {
+                    durationInfo.textContent = \`运行时长: \${duration}\`;
+                    durationInfo.style.display = 'inline';
+                }
+            }
+        }
 
         // Listen for messages from the extension
         window.addEventListener('message', event => {
@@ -987,6 +1363,19 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'updateToolbar':
                     updateToolbar(message.tabName, message.sessionInfo);
+                    break;
+                case 'updateStateDisplay':
+                    updateStateDisplay(message.tabName, message.stateInfo);
+                    break;
+                case 'updateTabTitle':
+                    updateTabTitle(message.tabName, message.newTitle);
+                    break;
+                case 'updateDuration':
+                    // 使用JavaScript计算并更新持续时间
+                    if (message.startTime) {
+                        const duration = calculateDurationJS(message.startTime);
+                        updateDuration(message.tabName, duration);
+                    }
                     break;
             }
         });

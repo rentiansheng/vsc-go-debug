@@ -17,6 +17,7 @@ import { GoDebugConfigurationProvider as GoDebugConfigProvider } from './goDebug
 import { ConfigurationEditorProvider } from './configurationEditorProvider';
 import { QuickConfigurationProvider } from './quickConfigurationProvider';
 import { GoDebugOutputProvider } from './goDebugOutputProvider';
+import { GlobalStateManager } from './globalStateManager';
 
 interface RunningConfig {
 	mode: 'run' | 'debug';
@@ -67,6 +68,12 @@ class DebugLogger {
 class ConfigurationStateManager {
 	private static instance: ConfigurationStateManager;
 	private runningConfigs: Map<string, RunningConfig> = new Map();
+	private globalStateManager: GlobalStateManager;
+
+	constructor() {
+		// 集成全局状态管理器
+		this.globalStateManager = GlobalStateManager.getInstance();
+	}
 
 	// 清理所有已退出的进程，防止状态假阳性
 	private cleanupExitedConfigs() {
@@ -116,6 +123,14 @@ class ConfigurationStateManager {
 		
 		this.runningConfigs.set(configName, config);
 		
+		// 同步到全局状态管理器
+		this.globalStateManager.setState(
+			configName, 
+			config.mode as 'debug' | 'run', 
+			'running', 
+			config.process
+		);
+		
 		// Monitor process exit
 		config.process.on('exit', (code, signal) => {
 			DebugLogger.log(`Process for ${configName} exited with code ${code}, signal ${signal}`);
@@ -128,6 +143,11 @@ class ConfigurationStateManager {
 		});
 		if (globalDebugConfigProvider) {
 			globalDebugConfigProvider.refresh();
+		}
+		
+		// 通知 GO DEBUG 输出面板
+		if (globalGoDebugOutputProvider) {
+			globalGoDebugOutputProvider.addOutput(`🚀 Configuration started: ${configName} (${config.mode})`, configName);
 		}
 	}
 
@@ -147,9 +167,17 @@ class ConfigurationStateManager {
 			
 			this.runningConfigs.delete(configName);
 			
+			// 同步到全局状态管理器
+			this.globalStateManager.setState(configName, config.mode as 'debug' | 'run', 'stopped');
+			
 			// Refresh the debug config tree
 			if (globalDebugConfigProvider) {
 				globalDebugConfigProvider.refresh();
+			}
+			
+			// 通知 GO DEBUG 输出面板
+			if (globalGoDebugOutputProvider) {
+				globalGoDebugOutputProvider.addOutput(`⏹️ Configuration stopped: ${configName}`, configName);
 			}
 		}
 	}
@@ -262,10 +290,12 @@ async function saveConfigurationToLaunchJson(config: vscode.DebugConfiguration, 
 }
 
 // Helper function to run debug configurations with run or debug mode
-async function runDebugConfiguration(configItem: any, mode: 'run' | 'debug'): Promise<void> {
+export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debug'): Promise<void> {
 	const outputChannel = vscode.window.createOutputChannel('Go Debug Pro');
-	outputChannel.show();
 	
+	// TODO: 如果已经展示，无需在 show
+	//outputChannel.show();
+ 
 	try {
 		outputChannel.appendLine(`\n=== Go Debug Pro Execution Log ===`);
 		outputChannel.appendLine(`Time: ${new Date().toLocaleString()}`);
@@ -293,6 +323,7 @@ async function runDebugConfiguration(configItem: any, mode: 'run' | 'debug'): Pr
 			// Fallback - try to use the item directly
 			config = configItem;
 		}
+		config.mode = mode.toLocaleLowerCase();
 		
 		// Create a safe copy of the configuration to avoid circular references
 		const safeOriginalConfig = {
@@ -585,7 +616,8 @@ function logToDebugOutput(message: string, outputChannel?: vscode.OutputChannel)
 // Helper functions for context menu commands
 async function debugCurrentGoFile(context: vscode.ExtensionContext, mode: 'debug' | 'run'): Promise<void> {
 	const outputChannel = vscode.window.createOutputChannel('Go Debug Pro');
-	outputChannel.show();
+	// TODO: 如果已经展示，无需在 show
+	//outputChannel.show();
 	
 	outputChannel.appendLine(`\n=== Go Debug Pro File Execution ===`);
 	outputChannel.appendLine(`Time: ${new Date().toLocaleString()}`);
@@ -628,9 +660,9 @@ async function debugCurrentGoFile(context: vscode.ExtensionContext, mode: 'debug
 	// Create configuration
 	const config = {
 		name: `${mode === 'debug' ? 'Debug' : 'Run'} ${fileName}`,
-		type: 'go',
+		type: 'go-debug-pro',
 		request: 'launch',
-		mode: 'debug' as const,
+		mode: mode === 'debug' ? 'debug' : 'exec',
 		program: filePath,
 		cwd: workspaceFolder.uri.fsPath,
 		stopOnEntry: mode === 'debug'
@@ -748,9 +780,11 @@ export function activate(context: vscode.ExtensionContext) {
 	const goDebugOutputProvider = new GoDebugOutputProvider(context.extensionUri);
 	globalGoDebugOutputProvider = goDebugOutputProvider; // Set global reference
 	context.subscriptions.push(
-		vscode.window.registerWebviewViewProvider('goDebugOutput', goDebugOutputProvider)
+		vscode.window.registerWebviewViewProvider('goDebugOutput', goDebugOutputProvider, {
+			webviewOptions: { retainContextWhenHidden: true }
+		})
 	);
-
+	 
 	// Register debug adapter factory
 	const factory = new GoDebugAdapterDescriptorFactory();
 	context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory('go-debug-pro', factory));
@@ -1117,7 +1151,7 @@ async function restartConfiguration(
 }
 
 // Helper function to terminate a configuration
-async function terminateConfiguration(
+export async function terminateConfiguration(
 	item: any,
 	stateManager: ConfigurationStateManager,
 	debugConfigProvider: any
