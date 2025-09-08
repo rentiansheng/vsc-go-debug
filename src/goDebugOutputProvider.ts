@@ -1191,7 +1191,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
         
         function updateToolbar(tabName, configState) {
-            const toolbar = document.querySelector(\`[data-tab="\${tabName}"]\`);
+            const toolbar = document.querySelector(\`[data-content="\${tabName}"]\`);
             if (!toolbar) {
                 console.warn(\`Toolbar not found for tab: \${tabName}\`);
                 return;
@@ -1207,8 +1207,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 toolbarFound: !!toolbar
             });
             
-            // 更新状态显示
-            updateStateDisplayFromConfig(toolbar, tabName, configState);
+  
             
             // Update stop button - enabled when running
             const stopBtn = toolbar.querySelector('[data-action="stop"]');
