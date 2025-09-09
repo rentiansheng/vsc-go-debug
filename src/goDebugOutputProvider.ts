@@ -348,6 +348,15 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                     this.addOutput("not can run. proccess is run", tabName);
                 }
                 break;
+            case 'debug':
+                if (!configState || configState.state === 'stopped') {
+                    this.addOutput(`Starting debug session for ${tabName}...`, tabName);
+                    this.globalStateManager.setState(tabName, 'debug', 'starting');
+                    await this.executeRun(tabName, "debug");
+                } else {
+                    this.addOutput("Cannot start debug session. Process is already running.", tabName);
+                }
+                break;
             case 'stop':
                 if (configState && (configState.state === 'running' || configState.state === 'starting')) {
                     this.addOutput(`Stopping ${tabName}...`, tabName);
@@ -679,13 +688,24 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     }
 
     private _getHtmlForWebview(webview: vscode.Webview) {
+        // Get path to codicons
+        const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'node_modules', '@vscode', 'codicons', 'dist', 'codicon.css'));
+        
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Go Debug Output</title>
+    <link href="${codiconsUri}" rel="stylesheet" />
     <style>
+        /* VS Code icon symbols - using Unicode characters that work in VS Code */
+        .vscode-icon {
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        
         body {
             font-family: var(--vscode-font-family);
             font-size: var(--vscode-font-size);
@@ -901,6 +921,24 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             background-color: var(--vscode-button-hoverBackground);
         }
         
+        /* VS Code icon styles for toolbar buttons */
+        .toolbar-button .vscode-icon {
+            font-size: 14px;
+            color: inherit;
+            display: inline-block;
+        }
+        
+        .toolbar-button:disabled .vscode-icon {
+            opacity: 0.5;
+        }
+        
+        /* Special styling for small bug icon */
+        .toolbar-button .codicon-bug {
+            font-size: 10px; /* 1/4 of normal size (32px -> 8px) */
+            margin-left: -22px;
+            margin-top: 10px;
+        }
+        
         .toolbar-separator {
             width: 1px;
             height: 16px;
@@ -1000,19 +1038,41 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 toolbar.className = 'toolbar';
                 toolbar.setAttribute('data-tab', configName);
                 toolbar.innerHTML = \`
+               
+                    <div class="toolbar-buttons">
+                        <button class="toolbar-button" data-action="stop" title="Stop" disabled>
+                            <span class="codicon codicon-debug-stop"></span>
+                        </button>
+                        <button class="toolbar-button primary" data-action="run" title="Run">
+                            <span class="codicon codicon-play"></span>
+                        </button>
+                        <button class="toolbar-button primary" data-action="debug" title="Debug">
+                            <span class="codicon codicon-debug-alt"></span>
+                        </button>
+                        <button class="toolbar-button" data-action="restart" title="Restart" disabled>
+                            <span class="codicon codicon-debug-restart"></span>
+                        </button>
+                        <button class="toolbar-button" data-action="redebug" title="Redebug" disabled>
+                            <span class="codicon codicon-debug-restart"></span>
+                            <span class="codicon codicon-bug"></span>
+                        </button>
+                        <div class="toolbar-separator"></div>
+                        <button class="toolbar-button" data-action="continue" title="Continue" disabled>
+                            <span class="codicon codicon-debug-continue"></span>
+                        </button>
+                        <button class="toolbar-button" data-action="stepOver" title="Step Over" disabled>
+                            <span class="codicon codicon-debug-step-over"></span>
+                        </button>
+                        <button class="toolbar-button" data-action="stepInto" title="Step Into" disabled>
+                            <span class="codicon codicon-debug-step-into"></span>
+                        </button>
+                        <button class="toolbar-button" data-action="stepOut" title="Step Out" disabled>
+                            <span class="codicon codicon-debug-step-out"></span>
+                        </button>
+                    </div>
                     <div class="state-info">
                         <span class="state-badge" data-state="stopped">已停止</span>
                         <span class="duration-info" style="display: none;"></span>
-                    </div>
-                    <div class="toolbar-buttons">
-                        <button class="toolbar-button" data-action="stop" title="Stop" disabled>⏹️</button>
-                        <button class="toolbar-button primary" data-action="run" title="Run">▶️</button>
-                        <button class="toolbar-button" data-action="restart" title="Restart" disabled>🔄</button>
-                        <div class="toolbar-separator"></div>
-                        <button class="toolbar-button" data-action="continue" title="Continue" disabled>▶️</button>
-                        <button class="toolbar-button" data-action="stepOver" title="Step Over" disabled>⤴️</button>
-                        <button class="toolbar-button" data-action="stepInto" title="Step Into" disabled>⤵️</button>
-                        <button class="toolbar-button" data-action="stepOut" title="Step Out" disabled>⤴️</button>
                     </div>
                 \`;
                 
@@ -1226,12 +1286,37 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             } else {
                 console.warn(\`[JS] Run button not found for \${tabName}\`);
             }
-            
+            const debugBtn = toolbar.querySelector('[data-action="debug"]');    
+             if (debugBtn) {
+                debugBtn.disabled = isRunning;
+                console.log(\`[JS] Debug button for \${tabName}: \${isRunning ? 'disabled' : 'enabled'}\`);
+            } else {
+                console.warn(\`[JS] Debug button not found for \${tabName}\`);
+            }
+
             // Update restart button - enabled when running
             const restartBtn = toolbar.querySelector('[data-action="restart"]');
             if (restartBtn) {
                 restartBtn.disabled = !isRunning;
                 console.log(\`[JS] Restart button for \${tabName}: \${!isRunning ? 'disabled' : 'enabled'}\`);
+            }
+            const redebugBtn = toolbar.querySelector('[data-action="redebug"]');
+            if (redebugBtn) {
+                redebugBtn.disabled = !isRunning;
+                console.log(\`[JS] Restart button for \${tabName}: \${!isRunning ? 'disabled' : 'enabled'}\`);
+            }
+            if(isRunning){
+                stopBtn.style.display = 'flex';
+                runBtn.style.display = 'none';
+                debugBtn.style.display = 'none';
+                restartBtn.style.display = 'flex';
+                redebugBtn.style.display = 'flex';
+            }else{
+                stopBtn.style.display = 'none';
+                runBtn.style.display = 'flex';
+                debugBtn.style.display = 'flex';
+                restartBtn.style.display = 'none';
+                redebugBtn.style.display = 'none';
             }
             
             // Update debug buttons - enabled when running and is debug session
