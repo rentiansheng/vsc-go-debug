@@ -362,11 +362,15 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                     this.addOutput(`Stopping ${tabName}...`, tabName);
                     this.globalStateManager.stopConfig(tabName);
                 }
+                await this.stopSession(tabName);
                 break;
             case 'restart':
                 this.addOutput(`Restarting ${tabName}...`, tabName);
-                // TODO: 
                 await this.restartSession(tabName, "run");
+                break;
+            case 'redebug':
+                this.addOutput(`Restarting ${tabName}...`, tabName);
+                await this.restartSession(tabName, "debug");
                 break;
             case 'continue':
                 if (configState?.action === 'debug') {
@@ -1079,8 +1083,16 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 // Add event listeners to toolbar buttons
                 toolbar.addEventListener('click', (e) => {
                     const target = e.target;
-                    if (target && target.classList && target.classList.contains('toolbar-button')) {
-                        const action = target.getAttribute('data-action');
+                    if (target) {
+                        let action = "";
+                        if(target.classList && target.classList.contains('toolbar-button')) {
+                            action = target.getAttribute('data-action');
+                        } else {
+                            target.closest('.toolbar-button') && (action = target.closest('.toolbar-button').getAttribute('data-action'));
+                        }
+                        if (action === "") {
+                            return;
+                        }
                         if (action && !target.disabled) {
                             console.log(\`Toolbar action: \${action} for config: \${configName}\`);
                             vscode.postMessage({

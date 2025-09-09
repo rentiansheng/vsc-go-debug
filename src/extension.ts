@@ -217,7 +217,7 @@ class ConfigurationStateManager {
 			}
 			
 			this.setConfigStopped(configName);
-			return true;
+			return true;``
 		} catch (error) {
 			DebugLogger.error(`Error stopping config ${configName}: ${error}`);
 			return false;
@@ -523,33 +523,19 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 			outputChannel.appendLine(`✅ 4-step build and run process completed`);
 			
 		} else {
-			// For debug mode, use the existing debug session approach with enhanced environment handling
-			outputChannel.appendLine(`🐛 Starting debug session...`);
+			// For debug mode, implement compile-first then dlv remote debugging workflow
+			outputChannel.appendLine(`🐛 Starting compile-first debug workflow...`);
 			
-			// Merge system environment variables with configuration environment variables
-			const mergedEnv = { ...process.env };
-			if (runConfig.env && Object.keys(runConfig.env).length > 0) {
-				Object.assign(mergedEnv, runConfig.env);
-				outputChannel.appendLine(`🌍 Environment variables for debug session:`);
-				for (const [key, value] of Object.entries(runConfig.env)) {
-					outputChannel.appendLine(`   ${key}=${value}`);
-				}
-				outputChannel.appendLine(`📝 System environment variables preserved and merged`);
-			}
-			
-			// Update the configuration with merged environment
-			const debugConfig = { ...runConfig, env: mergedEnv };
-			
-			outputChannel.appendLine(`🎯 Debug configuration prepared with merged environment`);
-			
-			const success = await vscode.debug.startDebugging(workspaceFolder, debugConfig);
-			
-			if (success) {
-				outputChannel.appendLine(`✅ Debug session started successfully`);
-			} else {
-				const errorMsg = `Failed to start debug session for configuration: ${safeOriginalConfig.name}`;
-				outputChannel.appendLine(`❌ ${errorMsg}`);
-				vscode.window.showErrorMessage(errorMsg);
+			try {
+				await executeCompileAndDlvDebug(
+					workspaceFolder,
+					runConfig,
+					safeOriginalConfig,
+					outputChannel
+				);
+			} catch (error) {
+				outputChannel.appendLine(`❌ Debug execution failed: ${error}`);
+				vscode.window.showErrorMessage(`Debug execution failed: ${error}`);
 			}
 		}
 	} catch (error) {
@@ -1178,6 +1164,443 @@ export async function terminateConfiguration(
 // This method is called when your extension is deactivated
 export function deactivate() {}
 
+// Helper function to execute compile-first then dlv remote debug workflow
+async function executeCompileAndDlvDebug(
+	workspaceFolder: vscode.WorkspaceFolder,
+	runConfig: any,
+	safeOriginalConfig: any,
+	outputChannel: vscode.OutputChannel
+): Promise<void> {
+	const stateManager = ConfigurationStateManager.getInstance();
+	
+	// Log session start with detailed timing
+	DebugLogger.info(`Starting compile-first dlv debug workflow for: ${safeOriginalConfig.name}`, outputChannel);
+	DebugLogger.info(`Workspace: ${workspaceFolder.uri.fsPath}`, outputChannel);
+	
+	// Add a marker to indicate new debug session
+	outputChannel.appendLine(`\n🔨 Starting compile-first debug workflow for: ${safeOriginalConfig.name}`);
+	outputChannel.appendLine(`⏰ Time: ${new Date().toLocaleString()}`);
+	
+	try {
+		// Step 1: Determine source directory and binary details
+		let sourceDir = workspaceFolder.uri.fsPath;
+		let sourcePath = '.';
+		let binaryBaseName = 'main';
+		
+		if (runConfig.program) {
+			let programPath = runConfig.program;
+			
+			// Handle ${workspaceFolder} replacement
+			if (programPath.includes('${workspaceFolder}')) {
+				programPath = programPath.replace('${workspaceFolder}', workspaceFolder.uri.fsPath);
+			}
+			
+			// If program path is relative, make it absolute
+			if (!path.isAbsolute(programPath)) {
+				programPath = path.resolve(workspaceFolder.uri.fsPath, programPath);
+			}
+			
+			// Determine source directory (where we'll run go build)
+			if (programPath.endsWith('.go')) {
+				sourceDir = path.dirname(programPath);
+				sourcePath = path.basename(programPath);
+				binaryBaseName = path.basename(programPath, '.go');
+			} else {
+				sourceDir = programPath;
+				sourcePath = '.';
+				binaryBaseName = path.basename(programPath) || 'main';
+			}
+		}
+		
+		// Create binary in system temporary directory with timestamp
+		const timestamp = Date.now();
+		const tempDir = os.tmpdir();
+		const outputBinary = `${binaryBaseName}-debug-${timestamp}`;
+		const absoluteBinaryPath = path.join(tempDir, outputBinary);
+		
+		outputChannel.appendLine(`📂 Source directory: ${sourceDir}`);
+		outputChannel.appendLine(`📄 Source path: ${sourcePath}`);
+		outputChannel.appendLine(`📦 Debug binary: ${outputBinary}`);
+		outputChannel.appendLine(`🗂️  Temp directory: ${tempDir}`);
+		outputChannel.appendLine(`🎯 Absolute binary path: ${absoluteBinaryPath}`);
+		
+		// Step 2: Build the binary with debug flags
+		outputChannel.appendLine(`\n🔨 Step 1 - Building Go application with debug flags...`);
+		
+		const buildArgs = ['build', '-gcflags=all=-N -l']; // Disable optimizations for debugging
+		
+		// Add build flags if any
+		if (runConfig.buildFlags) {
+			buildArgs.push(...runConfig.buildFlags.split(' ').filter((flag: string) => flag.trim()));
+			outputChannel.appendLine(`🔧 Added build flags: ${runConfig.buildFlags}`);
+		}
+		
+		// Add output and source
+		buildArgs.push('-o', absoluteBinaryPath, sourcePath);
+		
+		const buildCommand = buildArgs.join(' ');
+		outputChannel.appendLine(`🔨 Build command: go ${buildCommand}`);
+		
+		// Execute build process
+		const buildStartTime = Date.now();
+		DebugLogger.info(`Starting DEBUG build process with command: go ${buildCommand}`, outputChannel);
+		
+		// Create tab for this configuration in the output panel early
+		if (globalGoDebugOutputProvider) {
+			globalGoDebugOutputProvider.createTab(safeOriginalConfig.name);
+			globalGoDebugOutputProvider.addOutput(
+				`🔨 Starting compile-first debug for: ${safeOriginalConfig.name}`,
+				safeOriginalConfig.name
+			);
+			
+			// Show the Go Debug output panel and focus on it
+			vscode.commands.executeCommand('workbench.view.extension.goDebugPanel').then(() => {
+				setTimeout(() => {
+					vscode.commands.executeCommand('goDebugOutput.focus');
+				}, 100);
+			});
+		}
+		
+		const buildProcess = cp.spawn('go', buildArgs, {
+			cwd: sourceDir,
+			stdio: ['pipe', 'pipe', 'pipe']
+		});
+		
+		let buildOutput = '';
+		let buildError = '';
+		
+		buildProcess.stdout?.on('data', (data) => {
+			const output = data.toString();
+			buildOutput += output;
+			outputChannel.append(output);
+			
+			if (globalGoDebugOutputProvider) {
+				const lines = output.split('\n');
+				lines.forEach((line: string) => {
+					if (line.trim()) {
+						globalGoDebugOutputProvider!.addOutput(`🔨 ${line}`, safeOriginalConfig.name);
+					}
+				});
+			}
+		});
+		
+		buildProcess.stderr?.on('data', (data) => {
+			const error = data.toString();
+			buildError += error;
+			outputChannel.append(error);
+			
+			if (globalGoDebugOutputProvider) {
+				const lines = error.split('\n');
+				lines.forEach((line: string) => {
+					if (line.trim()) {
+						globalGoDebugOutputProvider!.addOutput(`❌ Build Error: ${line}`, safeOriginalConfig.name);
+					}
+				});
+			}
+		});
+		
+		await new Promise<void>((resolve, reject) => {
+			buildProcess.on('exit', (code) => {
+				const buildDuration = Date.now() - buildStartTime;
+				if (code === 0) {
+					DebugLogger.info(`DEBUG build completed successfully in ${buildDuration}ms`, outputChannel);
+					outputChannel.appendLine(`✅ Build completed successfully in ${buildDuration}ms`);
+					
+					if (globalGoDebugOutputProvider) {
+						globalGoDebugOutputProvider.addOutput(
+							`✅ Build completed successfully in ${buildDuration}ms`,
+							safeOriginalConfig.name
+						);
+					}
+					resolve();
+				} else {
+					const errorMsg = `Build failed with exit code ${code}`;
+					outputChannel.appendLine(`❌ ${errorMsg}`);
+					if (buildError) {
+						outputChannel.appendLine(`Build error output: ${buildError}`);
+					}
+					
+					if (globalGoDebugOutputProvider) {
+						globalGoDebugOutputProvider.addOutput(
+							`❌ ${errorMsg}`,
+							safeOriginalConfig.name
+						);
+					}
+					reject(new Error(errorMsg));
+				}
+			});
+		});
+		
+		// Step 3: Start delve in headless mode for remote debugging
+		outputChannel.appendLine(`\n🐛 Step 2 - Starting dlv in headless mode for remote debugging...`);
+		
+		// Determine working directory
+		let workingDir = sourceDir;
+		if (runConfig.cwd) {
+			workingDir = runConfig.cwd.replace('${workspaceFolder}', workspaceFolder.uri.fsPath);
+			outputChannel.appendLine(`📂 Working directory: ${workingDir}`);
+		}
+		// Prepare environment variables
+		const execEnv = { ...process.env };
+		
+		let dlvExec = 'dlv'; // Assume dlv is in PATH by default
+		// 通过环境变量获取 go root, 看当前 go root 是否包含 dlv 可执行文件
+		const goRoot = execEnv['GOROOT'] || '';
+		if (goRoot) {
+			// 看当前 go root 是否包含 dlv 可执行文件
+			const dlvPath = path.join(goRoot, 'bin', 'dlv');
+			if (fs.existsSync(dlvPath)) {
+				dlvExec = dlvPath;
+			}  else {
+				const goPath = execEnv['GOPATH'] || '';
+				if (goPath) {
+					// 看当前 go path 是否包含 dlv 可执行文件
+					const dlvPath = path.join(goPath, 'bin', 'dlv');
+					if (fs.existsSync(dlvPath)) {
+						dlvExec = dlvPath;
+					}
+				}
+			}
+			
+
+		}
+
+
+		// Check if dlv is available
+		try {
+			await new Promise<void>((resolve, reject) => {
+				const checkDlv = cp.spawn(dlvExec, ['version'], { stdio: 'pipe' });
+				checkDlv.on('exit', (code) => {
+					if (code === 0) {
+						resolve();
+					} else {
+						reject(new Error('dlv not found. Please install delve: go install github.com/go-delve/delve/cmd/dlv@latest'));
+					}
+				});
+				checkDlv.on('error', () => {
+					reject(new Error('dlv not found. Please install delve: go install github.com/go-delve/delve/cmd/dlv@latest'));
+				});
+			});
+		} catch (error) {
+			DebugLogger.error(`❌ ${error}`, outputChannel);
+			return;
+		}
+		
+		// Kill any existing dlv process on port 2345
+		outputChannel.appendLine(`🔄 Stopping any existing delve process on port 2345...`);
+		try {
+			const killCommand = process.platform === 'win32' 
+				? `netstat -ano | findstr :2345 | for /f "tokens=5" %a in ('findstr LISTENING') do taskkill /PID %a /F`
+				: `lsof -ti:2345 | xargs kill -9`;
+			
+			if (process.platform !== 'win32') {
+				cp.execSync('lsof -ti:2345 | xargs kill -9 2>/dev/null || true');
+			}
+		} catch {
+			// Ignore errors - port might not be in use
+		}
+		
+		// Wait a moment for cleanup
+		await new Promise(resolve => setTimeout(resolve, 1000));
+		
+		// Prepare delve arguments for headless mode
+		const dlvPort = runConfig.port || 2345;
+		const dlvHost = runConfig.host || 'localhost';
+		const delveArgs = [
+			'exec', 
+			absoluteBinaryPath,
+			'--headless',
+			`--listen=${dlvHost}:${dlvPort}`,
+			'--api-version=2',
+			'--accept-multiclient',
+			'--check-go-version=false'
+		];
+		
+		// Add program arguments to delve
+		if (runConfig.args && runConfig.args.length > 0) {
+			delveArgs.push('--');
+			delveArgs.push(...runConfig.args);
+			outputChannel.appendLine(`⚡ Added program arguments: ${runConfig.args.join(' ')}`);
+		}
+		
+		
+		if (runConfig.env && Object.keys(runConfig.env).length > 0) {
+			Object.assign(execEnv, runConfig.env);
+			const envStr = Object.entries(runConfig.env)
+				.map(([key, value]) => `${key}="${value}"`)
+				.join(' ');
+			outputChannel.appendLine(`🌍 Environment variables: ${envStr}`);
+		}
+		
+		const delveCommand = delveArgs.join(' ');
+		outputChannel.appendLine(`🐛 Delve command: dlv ${delveCommand}`);
+		DebugLogger.info(`🌐 Debug server will be available at: ${dlvHost}:${dlvPort}`, outputChannel);
+
+		// Execute delve process
+		DebugLogger.info(`Starting DELVE headless process with command: dlv ${delveCommand}`, outputChannel);
+		DebugLogger.info(`Working directory: ${workingDir}`, outputChannel);
+		
+		const delveStartTime = Date.now();
+
+
+		const delveProcess = cp.spawn(dlvExec, delveArgs, {
+			cwd: workingDir,
+			env: execEnv,
+			stdio: ['pipe', 'pipe', 'pipe']
+		});
+		
+		// Set configuration as running with process information
+		stateManager.setConfigRunning(safeOriginalConfig.name, {
+			mode: 'debug',
+			process: delveProcess,
+			startTime: delveStartTime,
+			workingDir: workingDir,
+			binaryPath: absoluteBinaryPath
+		});
+		
+		DebugLogger.info(`DELVE process started with PID: ${delveProcess.pid}`, outputChannel);
+		outputChannel.appendLine(`✅ Delve started with PID: ${delveProcess.pid}`);
+		
+		if (globalGoDebugOutputProvider) {
+			globalGoDebugOutputProvider.addOutput(
+				`🐛 Delve server started on ${dlvHost}:${dlvPort} (PID: ${delveProcess.pid})`,
+				safeOriginalConfig.name
+			);
+		}
+		
+		// Wait for delve to be ready
+		let delveReady = false;
+		const maxWaitTime = 10000; // 10 seconds
+		const startWait = Date.now();
+		
+		delveProcess.stdout?.on('data', (data) => {
+			const output = data.toString();
+			outputChannel.append(output);
+			
+			// Check if delve is ready
+			if (output.includes('API server listening at:') || output.includes('listening at:')) {
+				delveReady = true;
+			}
+			
+			if (globalGoDebugOutputProvider) {
+				const lines = output.split('\n');
+				lines.forEach((line: string) => {
+					if (line.trim()) {
+						globalGoDebugOutputProvider!.addOutput(`🐛 ${line}`, safeOriginalConfig.name);
+					}
+				});
+			}
+		});
+		
+		delveProcess.stderr?.on('data', (data) => {
+			const error = data.toString();
+			outputChannel.append(error);
+			
+			if (globalGoDebugOutputProvider) {
+				const lines = error.split('\n');
+				lines.forEach((line: string) => {
+					if (line.trim()) {
+						globalGoDebugOutputProvider!.addOutput(`⚠️ Delve: ${line}`, safeOriginalConfig.name);
+					}
+				});
+			}
+		});
+		
+		// Wait for delve to be ready or timeout
+		while (!delveReady && (Date.now() - startWait) < maxWaitTime) {
+			await new Promise(resolve => setTimeout(resolve, 500));
+		}
+		
+		if (delveReady) {
+			outputChannel.appendLine(`🎯 Delve debug server is ready for connections`);
+			outputChannel.appendLine(`📱 Connect your debugger to: ${dlvHost}:${dlvPort}`);
+			outputChannel.appendLine(`💡 You can now attach a debugger client to the remote delve server`);
+			
+			if (globalGoDebugOutputProvider) {
+				globalGoDebugOutputProvider.addOutput(
+					`🎯 Debug server ready - connect to ${dlvHost}:${dlvPort}`,
+					safeOriginalConfig.name
+				);
+			}
+			
+			// Show success message with connection info
+			// const action = await vscode.window.showInformationMessage(
+			// 	`Delve debug server started successfully on ${dlvHost}:${dlvPort}`,
+			// 	'Copy Connection Info',
+			// 	'Show Output'
+			// );
+			
+			// if (action === 'Copy Connection Info') {
+			// 	const connectionInfo = `dlv connect ${dlvHost}:${dlvPort}`;
+			// 	await vscode.env.clipboard.writeText(connectionInfo);
+		
+			// 	//vscode.window.showInformationMessage('Connection command copied to clipboard!');
+			// } else if (action === 'Show Output') {
+			// 	outputChannel.show();
+			// }
+			
+		} else {
+			DebugLogger.info(`⚠️ Delve server may not be fully ready yet, but process is running`, outputChannel);
+			DebugLogger.info(`📱 Try connecting to: ${dlvHost}:${dlvPort}`, outputChannel);
+		}
+		
+		// Handle process completion
+		delveProcess.on('exit', (code, signal) => {
+			const runDuration = Date.now() - delveStartTime;
+			const exitMessage = signal 
+				? `Delve process terminated by signal ${signal} after ${runDuration}ms` 
+				: `Delve process exited with code ${code} after ${runDuration}ms`;
+			
+			outputChannel.appendLine(`\n${exitMessage}`);
+			
+			if (globalGoDebugOutputProvider) {
+				globalGoDebugOutputProvider.addOutput(
+					code === 0 ? `✅ ${exitMessage}` : `❌ ${exitMessage}`,
+					safeOriginalConfig.name
+				);
+			}
+			
+			// Clean up binary file
+			if (fs.existsSync(absoluteBinaryPath)) {
+				try {
+					fs.unlinkSync(absoluteBinaryPath);
+					outputChannel.appendLine(`🧹 Cleaned up binary: ${absoluteBinaryPath}`);
+				} catch (error) {
+					outputChannel.appendLine(`⚠️ Failed to clean up binary: ${error}`);
+				}
+			}
+			
+			// Mark configuration as no longer running
+			stateManager.setConfigStopped(safeOriginalConfig.name);
+		});
+		
+		delveProcess.on('error', (error) => {
+			DebugLogger.error(`❌ Delve process error: ${error}`, outputChannel);
+			if (globalGoDebugOutputProvider) {
+				globalGoDebugOutputProvider.addOutput(
+					`❌ Delve error: ${error}`,
+					safeOriginalConfig.name
+				);
+			}
+			
+			stateManager.setConfigStopped(safeOriginalConfig.name);
+		});
+		
+	} catch (error) {
+		const errorMsg = `Failed to execute compile-first debug workflow: ${error}`;
+		DebugLogger.error(errorMsg, outputChannel);
+		if (globalGoDebugOutputProvider) {
+			globalGoDebugOutputProvider.addOutput(
+				`❌ ${errorMsg}`,
+				safeOriginalConfig.name
+			);
+		}
+		
+		//vscode.window.showErrorMessage(errorMsg);
+		throw error;
+	}
+}
+
 // Helper function to get or create a dedicated terminal for a configuration
 
 // Helper function to execute run mode with dedicated terminal
@@ -1471,7 +1894,7 @@ async function executeRunWithDedicatedTerminal(
 		const errorMsg = `Failed to execute run configuration: ${error}`;
 		outputChannel.appendLine(`❌ ${errorMsg}`);
 		// dedicatedTerminal.sendText(`echo "❌ ${errorMsg}"`);
-		vscode.window.showErrorMessage(errorMsg);
+		//vscode.window.showErrorMessage(errorMsg);
 	}
 }
 
@@ -1584,13 +2007,11 @@ async function executeDebugWithDedicatedTerminal(
 				const buildDuration = Date.now() - buildStartTime;
 				if (code === 0) {
 					DebugLogger.info(`DEBUG build completed successfully in ${buildDuration}ms`, outputChannel);
-					outputChannel.appendLine(`✅ Debug build completed successfully`);
 					// dedicatedTerminal.sendText(`echo "✅ Debug build completed successfully"`);
 					resolve();
 				} else {
-					DebugLogger.error(`DEBUG build failed with exit code ${code} after ${buildDuration}ms`, outputChannel);
 					const errorMsg = `Debug build failed with exit code ${code}`;
-					outputChannel.appendLine(`❌ ${errorMsg}`);
+ 					DebugLogger.error(errorMsg, outputChannel);
 					// dedicatedTerminal.sendText(`echo "❌ ${errorMsg}"`);
 					reject(new Error(errorMsg));
 				}
@@ -1675,7 +2096,7 @@ async function executeDebugWithDedicatedTerminal(
 		
 		delveProcess.stderr?.on('data', (data) => {
 			const error = data.toString();
-			outputChannel.append(error);
+			DebugLogger.error(`Delve stderr: ${error}`, outputChannel);
 			// dedicatedTerminal.sendText(error.replace(/\n$/, ''));
 		});
 		
@@ -1683,11 +2104,9 @@ async function executeDebugWithDedicatedTerminal(
 			const delveRunDuration = Date.now() - delveStartTime;
 			if (code !== null) {
 				DebugLogger.info(`DELVE process exited with code ${code} after running for ${delveRunDuration}ms`, outputChannel);
-				outputChannel.appendLine(`🐛 Delve process exited with code ${code}`);
 				// dedicatedTerminal.sendText(`echo "🐛 Delve process exited with code ${code}"`);
 			} else {
 				DebugLogger.info(`DELVE process terminated by signal ${signal} after running for ${delveRunDuration}ms`, outputChannel);
-				outputChannel.appendLine(`🐛 Delve process terminated by signal ${signal}`);
 				// dedicatedTerminal.sendText(`echo "🐛 Delve process terminated by signal ${signal}"`);
 			}
 		});
@@ -1696,13 +2115,13 @@ async function executeDebugWithDedicatedTerminal(
 		outputChannel.appendLine(`🔗 Delve debugger listening on :2345`);
 		// dedicatedTerminal.sendText(`echo "✅ Delve process started with PID: ${delveProcess.pid}"`);
 		// dedicatedTerminal.sendText(`echo "🔗 Delve debugger listening on :2345"`);
-		vscode.window.showInformationMessage(`Debug session started: ${safeOriginalConfig.name} (PID: ${delveProcess.pid})`);
+		//vscode.window.showInformationMessage(`Debug session started: ${safeOriginalConfig.name} (PID: ${delveProcess.pid})`);
 		
 	} catch (error) {
 		const errorMsg = `Failed to start debug session: ${error}`;
-		outputChannel.appendLine(`❌ ${errorMsg}`);
+		DebugLogger.error(errorMsg, outputChannel);
 		// dedicatedTerminal.sendText(`echo "❌ ${errorMsg}"`);
-		vscode.window.showErrorMessage(errorMsg);
+		//vscode.window.showErrorMessage(errorMsg);
 	}
 }
 
@@ -1789,10 +2208,10 @@ async function executeRunWithOutput(
 			if (e.execution === buildExecution) {
 				disposable.dispose();
 				if (e.exitCode === 0) {
-					buildOutputChannel.appendLine(`✅ Build completed successfully`);
+					DebugLogger.info(`Build completed successfully`, buildOutputChannel);
 					resolve();
 				} else {
-					buildOutputChannel.appendLine(`❌ Build failed with exit code: ${e.exitCode}`);
+					DebugLogger.error(`❌ Build failed with exit code:  ${e.exitCode}`, buildOutputChannel);
 					reject(new Error(`Build failed with exit code: ${e.exitCode}`));
 				}
 			}
@@ -1860,11 +2279,11 @@ async function executeRunWithOutput(
 			programOutputChannel.appendLine(`${'='.repeat(50)}`);
 			
 			if (e.exitCode === 0) {
-				outputChannel.appendLine(`✅ Program executed successfully`);
-				vscode.window.showInformationMessage(`Program executed successfully: ${safeOriginalConfig.name}`);
+				DebugLogger.info(`✅ Program executed successfully`, programOutputChannel);
+				//vscode.window.showInformationMessage(`Program executed successfully: ${safeOriginalConfig.name}`);
 			} else {
-				outputChannel.appendLine(`⚠️ Program exited with code: ${e.exitCode}`);
-				vscode.window.showWarningMessage(`Program exited with code ${e.exitCode}: ${safeOriginalConfig.name}`);
+				DebugLogger.info(`⚠️ Program exited with code: ${e.exitCode}`, programOutputChannel);
+				//vscode.window.showWarningMessage(`Program exited with code ${e.exitCode}: ${safeOriginalConfig.name}`);
 			}
 		}
 	});
