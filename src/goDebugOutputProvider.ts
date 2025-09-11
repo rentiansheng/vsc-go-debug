@@ -238,38 +238,41 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     private setupDebugSessionListeners(): void {
         // 监听调试会话开始
         vscode.debug.onDidStartDebugSession((session) => {
-            console.log('[Go Debug Output] Debug session started:', session.name, session.type);
+            const tabName = session.configuration.name;
+            console.log('[Go Debug Output] Debug session started:', tabName, session.type);
             if (session.type === 'go-debug-pro') {
                 // 确保创建对应的tab
-                if (!this._outputTabs.has(session.name)) {
-                    this.createTab(session.name);
+                if (!this._outputTabs.has(tabName)) {
+                    this.createTab(tabName );
                 }
                 
                 // 设置调试状态
-                this.setSessionInfo(session.name, 'debug', 'running');
-                this.addOutput(`🚀 Debug session started: ${session.name}`, session.name);
+                this.setSessionInfo(tabName, 'debug', 'running');
+                this.addOutput(`🚀 Debug session started: ${session.name}`, tabName);
                 
                 // 立即更新工具栏状态
-                setTimeout(() => this.updateToolbarState(session.name), 100);
+                setTimeout(() => this.updateToolbarState(tabName), 100);
             }
         });
 
         // 监听调试会话结束
         vscode.debug.onDidTerminateDebugSession((session) => {
-            console.log('[Go Debug Output] Debug session terminated:', session.name, session.type);
+            const tabName = session.configuration.name;
+            console.log('[Go Debug Output] Debug session terminated:', tabName, session.type);
             if (session.type === 'go-debug-pro') {
-                this.setSessionInfo(session.name, 'debug', 'stopped');
-                this.addOutput(`🛑 Debug session terminated: ${session.name}`, session.name);
-                
+                this.setSessionInfo(tabName, 'debug', 'stopped');
+                this.addOutput(`🛑 Debug session terminated: ${session.name}`, tabName);
+
                 // 立即更新工具栏状态
-                setTimeout(() => this.updateToolbarState(session.name), 100);
+                setTimeout(() => this.updateToolbarState(tabName), 100);
             }
         });
 
         // 监听调试会话变化
         vscode.debug.onDidChangeActiveDebugSession((session) => {
+
             if (session && session.type === 'go-debug-pro') {
-                console.log('[Go Debug Output] Active debug session changed:', session.name);
+                console.log('[Go Debug Output] Active debug session changed:', session.configuration.name);
                 // 更新所有工具栏状态，确保UI反映当前状态
                 setTimeout(() => this.updateAllToolbarStates(), 100);
             }

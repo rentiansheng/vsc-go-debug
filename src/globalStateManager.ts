@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { DelveClient } from './delveClient';
 
 /**
  * 配置状态定义
@@ -10,6 +11,7 @@ export interface ConfigState {
     process?: any;
     startTime?: Date;
     endTime?: Date;
+    delveClient?: DelveClient;
 }
 
 /**

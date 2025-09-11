@@ -62,8 +62,7 @@ export class GoDebugAdapter extends DebugSession {
 
 	protected async launchRequest(response: DebugProtocol.LaunchResponse, args: LaunchRequestArguments) {
 		try {
-			await this._delveClient.start(args.program);
-			
+			await this._delveClient.start(args.program, args.args || [], args.cwd || "", args.env || {});
 			if (args.stopOnEntry) {
 				this.sendEvent(new StoppedEvent('entry', 1));
 			} else {

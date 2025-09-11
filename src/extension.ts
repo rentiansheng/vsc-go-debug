@@ -18,6 +18,7 @@ import { ConfigurationEditorProvider } from './configurationEditorProvider';
 import { QuickConfigurationProvider } from './quickConfigurationProvider';
 import { GoDebugOutputProvider } from './goDebugOutputProvider';
 import { GlobalStateManager } from './globalStateManager';
+import { DelveClient } from './delveClient';
 
 interface RunningConfig {
 	mode: 'run' | 'debug';
@@ -26,11 +27,17 @@ interface RunningConfig {
 	workingDir: string;
 	binaryPath?: string; // For run mode
 	debugSession?: vscode.DebugSession; // For debug mode
+	debugServer?: {
+		host: string;
+		port: number;
+		address: string;
+	}; // For dlv DAP server info
 }
 
 // Global variables
 let globalDebugConfigProvider: DebugConfigurationProvider | undefined;
 let globalGoDebugOutputProvider: GoDebugOutputProvider | undefined;
+let globalRunningDebugServers: Map<string, { host: string; port: number; address: string }> = new Map();
 
 // Debug logging utility
 class DebugLogger {
@@ -81,6 +88,35 @@ class ConfigurationStateManager {
 			if (config.process.killed || config.process.exitCode !== null) {
 				this.runningConfigs.delete(name);
 			}
+		}
+	}
+
+	// 通过调试会话查找配置名称
+	findConfigByDebugSession(session: vscode.DebugSession): string | undefined {
+		for (const [name, config] of this.runningConfigs.entries()) {
+			if (config.debugSession === session) {
+				return name;
+			}
+		}
+		return undefined;
+	}
+
+	// 获取所有调试会话
+	getAllDebugSessions(): vscode.DebugSession[] {
+		const sessions: vscode.DebugSession[] = [];
+		for (const config of this.runningConfigs.values()) {
+			if (config.debugSession) {
+				sessions.push(config.debugSession);
+			}
+		}
+		return sessions;
+	}
+
+	// 清理调试服务器信息
+	cleanupDebugServer(configName: string): void {
+		if (globalRunningDebugServers.has(configName)) {
+			globalRunningDebugServers.delete(configName);
+			DebugLogger.log(`Cleaned up debug server info for config: ${configName}`);
 		}
 	}
 
@@ -167,6 +203,9 @@ class ConfigurationStateManager {
 			
 			this.runningConfigs.delete(configName);
 			
+			// Clean up debug server info if exists
+			this.cleanupDebugServer(configName);
+			
 			// 同步到全局状态管理器
 			this.globalStateManager.setState(configName, config.mode as 'debug' | 'run', 'stopped');
 			
@@ -217,7 +256,7 @@ class ConfigurationStateManager {
 			}
 			
 			this.setConfigStopped(configName);
-			return true;``
+			return true;
 		} catch (error) {
 			DebugLogger.error(`Error stopping config ${configName}: ${error}`);
 			return false;
@@ -995,10 +1034,21 @@ Recent debugging sessions and configuration details are logged to the output cha
 	// Register debug event listeners
 	context.subscriptions.push(
 		vscode.debug.onDidStartDebugSession((session) => {
-			if (session.type === 'go-debug-pro') {
+			if (session.type === 'go-debug-pro' || session.type === 'go') {
 				console.log('Go Debug Pro session started');
 				watchProvider.onSessionStarted(session);
 				breakpointManager.onSessionStarted(session);
+				
+				// Update the running configuration with the debug session
+				const configName = session.configuration?.name;
+				if (configName) {
+					const runningConfig = stateManager.getConfigState(configName);
+					if (runningConfig && runningConfig.mode === 'debug') {
+						// Update the running config with the debug session
+						runningConfig.debugSession = session;
+						stateManager.setConfigRunning(configName, runningConfig);
+					}
+				}
 				
 				// Create a tab for this configuration in the output panel
 				if (globalGoDebugOutputProvider && session.configuration?.name) {
@@ -1022,10 +1072,22 @@ Recent debugging sessions and configuration details are logged to the output cha
 
 	context.subscriptions.push(
 		vscode.debug.onDidTerminateDebugSession((session) => {
-			if (session.type === 'go-debug-pro') {
+			if (session.type === 'go-debug-pro' || session.type === 'go') {
 				console.log('Go Debug Pro session terminated');
 				watchProvider.onSessionTerminated(session);
 				breakpointManager.onSessionTerminated(session);
+				
+				// Find and update the running configuration
+				const configName = stateManager.findConfigByDebugSession(session);
+				if (configName) {
+					const runningConfig = stateManager.getConfigState(configName);
+					if (runningConfig) {
+						// Clear the debug session reference
+						runningConfig.debugSession = undefined;
+						// Stop the configuration
+						stateManager.setConfigStopped(configName);
+					}
+				}
 				
 				// Add termination message to the tab
 				if (globalGoDebugOutputProvider && session.configuration?.name) {
@@ -1070,6 +1132,7 @@ class LegacyGoDebugConfigurationProvider implements vscode.DebugConfigurationPro
 	resolveDebugConfiguration(folder: vscode.WorkspaceFolder | undefined, config: vscode.DebugConfiguration, token?: vscode.CancellationToken): vscode.ProviderResult<vscode.DebugConfiguration> {
 		
 		// If launch.json is missing or empty
+		// TODO: delete
 		if (!config.type && !config.request && !config.name) {
 			const editor = vscode.window.activeTextEditor;
 			if (editor && editor.document.languageId === 'go') {
@@ -1097,7 +1160,24 @@ class GoDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptorFa
 
 	createDebugAdapterDescriptor(session: vscode.DebugSession, executable: vscode.DebugAdapterExecutable | undefined): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
 		
-		// Use inline debug adapter
+		// Check if there's a running dlv server for this configuration
+		const configName = session.configuration?.name;
+		DebugLogger.info(`createDebugAdapterDescriptor called for config: ${configName}`);
+		
+		if (configName) {
+			const debugServerInfo = globalRunningDebugServers.get(configName);
+			if (debugServerInfo) {
+				// Connect to existing dlv DAP server
+				DebugLogger.info(`✅ Connecting to existing dlv DAP server at ${debugServerInfo.address} for config: ${configName}`);
+				console.log(`🔗 VS Code connecting to delve DAP server at ${debugServerInfo.address}`);
+				return new vscode.DebugAdapterServer(debugServerInfo.port, debugServerInfo.host);
+			} else {
+				DebugLogger.info(`❌ No running dlv server found for config: ${configName}`);
+			}
+		}
+		
+		// Use inline debug adapter as fallback
+		DebugLogger.info(`Using inline debug adapter as fallback`);
 		return new vscode.DebugAdapterInlineImplementation(new GoDebugAdapter());
 	}
 
@@ -1105,6 +1185,8 @@ class GoDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptorFa
 		if (this.server) {
 			this.server.close();
 		}
+		// Clean up any debug server mappings
+		globalRunningDebugServers.clear();
 	}
 }
 
@@ -1163,6 +1245,12 @@ export async function terminateConfiguration(
 
 // This method is called when your extension is deactivated
 export function deactivate() {}
+
+function output_info(message: string, name: string ) {
+	if(globalGoDebugOutputProvider) {
+		globalGoDebugOutputProvider.addOutput(message, name );
+	}
+}
 
 // Helper function to execute compile-first then dlv remote debug workflow
 async function executeCompileAndDlvDebug(
@@ -1343,87 +1431,143 @@ async function executeCompileAndDlvDebug(
 		// Prepare environment variables
 		const execEnv = { ...process.env };
 		
-		let dlvExec = 'dlv'; // Assume dlv is in PATH by default
-		// 通过环境变量获取 go root, 看当前 go root 是否包含 dlv 可执行文件
-		const goRoot = execEnv['GOROOT'] || '';
-		if (goRoot) {
-			// 看当前 go root 是否包含 dlv 可执行文件
-			const dlvPath = path.join(goRoot, 'bin', 'dlv');
-			if (fs.existsSync(dlvPath)) {
-				dlvExec = dlvPath;
-			}  else {
-				const goPath = execEnv['GOPATH'] || '';
-				if (goPath) {
-					// 看当前 go path 是否包含 dlv 可执行文件
-					const dlvPath = path.join(goPath, 'bin', 'dlv');
-					if (fs.existsSync(dlvPath)) {
-						dlvExec = dlvPath;
+ 
+
+
+		// Check Go version compatibility
+	async function checkGoVersionCompatibility(): Promise<void> {
+		try {
+			const { exec } = require('child_process');
+			const { promisify } = require('util');
+			const execAsync = promisify(exec);
+			
+			const { stdout } = await execAsync('go version');
+			const versionMatch = stdout.match(/go(\d+\.\d+)/);
+			
+			if (versionMatch) {
+				const version = versionMatch[1];
+				const [major, minor] = version.split('.').map(Number);
+				
+				// Check if version is less than 1.22
+				if (major < 1 || (major === 1 && minor < 22)) {
+					const warningMsg = `⚠️ Go Version Warning: You are using Go ${version}. Delve may require Go 1.22 or newer for optimal compatibility.`;
+					outputChannel.appendLine(warningMsg);
+					if (globalGoDebugOutputProvider) {
+						globalGoDebugOutputProvider.addOutput(warningMsg, safeOriginalConfig.name);
 					}
+					
+					// 提供解决方案建议
+					const solutionMsg = `💡 Solutions: 1) Upgrade Go to 1.22+ 2) Use an older Delve version 3) Use --check-go-version=false (already applied)`;
+					outputChannel.appendLine(solutionMsg);
+					if (globalGoDebugOutputProvider) {
+						globalGoDebugOutputProvider.addOutput(solutionMsg, safeOriginalConfig.name);
+					}
+				} else {
+					outputChannel.appendLine(`✅ Go version ${version} is compatible with Delve`);
 				}
 			}
-			
-
+		} catch (error) {
+			outputChannel.appendLine(`⚠️ Could not check Go version: ${error}`);
 		}
+	}
 
+	// Check Go version before starting delve
+	await checkGoVersionCompatibility();
+
+	const delveClient = new DelveClient();
+
+		// 添加事件监听器来监控 dlv 状态
+		delveClient.on('stdout', (data) => {
+			if (globalGoDebugOutputProvider) {
+				globalGoDebugOutputProvider.addOutput(`📤 DLV: ${data.trim()}`, safeOriginalConfig.name);
+			}
+		});
+
+		delveClient.on('stderr', (data) => {
+			if (globalGoDebugOutputProvider) {
+				globalGoDebugOutputProvider.addOutput(`⚠️ DLV Error: ${data.trim()}`, safeOriginalConfig.name);
+			}
+		});
+
+		delveClient.on('exit', (code, signal) => {
+			const exitMsg = `Delve process exited - code: ${code}, signal: ${signal}`;
+			outputChannel.appendLine(`🔴 ${exitMsg}`);
+			if (globalGoDebugOutputProvider) {
+				globalGoDebugOutputProvider.addOutput(`🔴 ${exitMsg}`, safeOriginalConfig.name);
+			}
+			
+			// 分析退出原因
+			if (code !== 0) {
+				let reasonMsg = `Delve exited with non-zero code ${code}. `;
+				if (code === 1) {
+					reasonMsg += "This usually indicates a general error.";
+				} else if (code === 2) {
+					reasonMsg += "This usually indicates a command line usage error.";
+				} else if (code === 130) {
+					reasonMsg += "This indicates the process was interrupted (Ctrl+C).";
+				}
+				outputChannel.appendLine(`📋 Exit reason: ${reasonMsg}`);
+			}
+		});
+
+		delveClient.on('error', (error) => {
+			const errorMsg = `Delve process error: ${error}`;
+			outputChannel.appendLine(`❌ ${errorMsg}`);
+			if (globalGoDebugOutputProvider) {
+				globalGoDebugOutputProvider.addOutput(`❌ ${errorMsg}`, safeOriginalConfig.name);
+			}
+		});
+
+		delveClient.on('ready', () => {
+			outputChannel.appendLine(`✅ Delve is ready and listening`);
+			if (globalGoDebugOutputProvider) {
+				globalGoDebugOutputProvider.addOutput(`✅ Delve is ready and listening`, safeOriginalConfig.name);
+			}
+		});
+
+		// 新增：监听 DAP 事件
+		delveClient.on('dap-event', (event: any) => {
+			const eventInfo = `DAP Event: ${event.event} - ${JSON.stringify(event.body)}`;
+			outputChannel.appendLine(`📡 ${eventInfo}`);
+			if (globalGoDebugOutputProvider) {
+				globalGoDebugOutputProvider.addOutput(`📡 ${eventInfo}`, safeOriginalConfig.name);
+			}
+			
+			// 特别处理 stopped 事件
+			if (event.event === 'stopped') {
+				const reason = event.body?.reason || 'unknown';
+				outputChannel.appendLine(`⏸️ Program stopped: ${reason}`);
+				
+				// 如果是在入口点停止，说明调试会话正常开始
+				if (reason === 'entry') {
+					outputChannel.appendLine(`🎯 Debug session started - program paused at entry point`);
+				}
+			}
+		});
 
 		// Check if dlv is available
 		try {
-			await new Promise<void>((resolve, reject) => {
-				const checkDlv = cp.spawn(dlvExec, ['version'], { stdio: 'pipe' });
-				checkDlv.on('exit', (code) => {
-					if (code === 0) {
-						resolve();
-					} else {
-						reject(new Error('dlv not found. Please install delve: go install github.com/go-delve/delve/cmd/dlv@latest'));
-					}
-				});
-				checkDlv.on('error', () => {
-					reject(new Error('dlv not found. Please install delve: go install github.com/go-delve/delve/cmd/dlv@latest'));
-				});
-			});
+			const exists = await delveClient.checkDlvExists();
+			if(exists === false) {
+				DebugLogger.error(`❌ 'dlv not found. Please install delve: go install github.com/go-delve/delve/cmd/dlv@latest'`, outputChannel);
+				 
+				output_info(
+					`❌ 'dlv not found. Please install delve: go install github.com/go-delve/delve/cmd/dlv@latest'`,
+					safeOriginalConfig.name
+				);
+			 
+				return;
+			}
 		} catch (error) {
-			DebugLogger.error(`❌ ${error}`, outputChannel);
+			output_info(
+				`❌ Error checking dlv: ${error}`,
+				safeOriginalConfig.name
+			);
+ 
+			DebugLogger.error(`❌ 'dlv not found. Please install delve: go install github.com/go-delve/delve/cmd/dlv@latest'`, outputChannel);
 			return;
 		}
-		
-		// Kill any existing dlv process on port 2345
-		outputChannel.appendLine(`🔄 Stopping any existing delve process on port 2345...`);
-		try {
-			const killCommand = process.platform === 'win32' 
-				? `netstat -ano | findstr :2345 | for /f "tokens=5" %a in ('findstr LISTENING') do taskkill /PID %a /F`
-				: `lsof -ti:2345 | xargs kill -9`;
-			
-			if (process.platform !== 'win32') {
-				cp.execSync('lsof -ti:2345 | xargs kill -9 2>/dev/null || true');
-			}
-		} catch {
-			// Ignore errors - port might not be in use
-		}
-		
-		// Wait a moment for cleanup
-		await new Promise(resolve => setTimeout(resolve, 1000));
-		
-		// Prepare delve arguments for headless mode
-		const dlvPort = runConfig.port || 2345;
-		const dlvHost = runConfig.host || 'localhost';
-		const delveArgs = [
-			'exec', 
-			absoluteBinaryPath,
-			'--headless',
-			`--listen=${dlvHost}:${dlvPort}`,
-			'--api-version=2',
-			'--accept-multiclient',
-			'--check-go-version=false'
-		];
-		
-		// Add program arguments to delve
-		if (runConfig.args && runConfig.args.length > 0) {
-			delveArgs.push('--');
-			delveArgs.push(...runConfig.args);
-			outputChannel.appendLine(`⚡ Added program arguments: ${runConfig.args.join(' ')}`);
-		}
-		
-		
+
 		if (runConfig.env && Object.keys(runConfig.env).length > 0) {
 			Object.assign(execEnv, runConfig.env);
 			const envStr = Object.entries(runConfig.env)
@@ -1432,58 +1576,13 @@ async function executeCompileAndDlvDebug(
 			outputChannel.appendLine(`🌍 Environment variables: ${envStr}`);
 		}
 		
-		const delveCommand = delveArgs.join(' ');
-		outputChannel.appendLine(`🐛 Delve command: dlv ${delveCommand}`);
-		DebugLogger.info(`🌐 Debug server will be available at: ${dlvHost}:${dlvPort}`, outputChannel);
-
-		// Execute delve process
-		DebugLogger.info(`Starting DELVE headless process with command: dlv ${delveCommand}`, outputChannel);
-		DebugLogger.info(`Working directory: ${workingDir}`, outputChannel);
+		const delveStartTime = Date.now(); 
 		
-		const delveStartTime = Date.now();
-
-
-		const delveProcess = cp.spawn(dlvExec, delveArgs, {
-			cwd: workingDir,
-			env: execEnv,
-			stdio: ['pipe', 'pipe', 'pipe']
-		});
-		
-		// Set configuration as running with process information
-		stateManager.setConfigRunning(safeOriginalConfig.name, {
-			mode: 'debug',
-			process: delveProcess,
-			startTime: delveStartTime,
-			workingDir: workingDir,
-			binaryPath: absoluteBinaryPath
-		});
-		
-		DebugLogger.info(`DELVE process started with PID: ${delveProcess.pid}`, outputChannel);
-		outputChannel.appendLine(`✅ Delve started with PID: ${delveProcess.pid}`);
-		
-		if (globalGoDebugOutputProvider) {
-			globalGoDebugOutputProvider.addOutput(
-				`🐛 Delve server started on ${dlvHost}:${dlvPort} (PID: ${delveProcess.pid})`,
-				safeOriginalConfig.name
-			);
-		}
-		
-		// Wait for delve to be ready
-		let delveReady = false;
-		const maxWaitTime = 10000; // 10 seconds
-		const startWait = Date.now();
-		
-		delveProcess.stdout?.on('data', (data) => {
-			const output = data.toString();
-			outputChannel.append(output);
-			
-			// Check if delve is ready
-			if (output.includes('API server listening at:') || output.includes('listening at:')) {
-				delveReady = true;
-			}
-			
+		// 设置事件监听器来处理 dlv 输出
+		delveClient.on('stdout', (data: string) => {
+			outputChannel.append(data);
 			if (globalGoDebugOutputProvider) {
-				const lines = output.split('\n');
+				const lines = data.split('\n');
 				lines.forEach((line: string) => {
 					if (line.trim()) {
 						globalGoDebugOutputProvider!.addOutput(`🐛 ${line}`, safeOriginalConfig.name);
@@ -1492,66 +1591,81 @@ async function executeCompileAndDlvDebug(
 			}
 		});
 		
-		delveProcess.stderr?.on('data', (data) => {
-			const error = data.toString();
-			outputChannel.append(error);
-			
+		delveClient.on('stderr', (data: string) => {
+			outputChannel.append(data);
 			if (globalGoDebugOutputProvider) {
-				const lines = error.split('\n');
+				const lines = data.split('\n');
 				lines.forEach((line: string) => {
 					if (line.trim()) {
 						globalGoDebugOutputProvider!.addOutput(`⚠️ Delve: ${line}`, safeOriginalConfig.name);
+						
+						// 检查 Go 版本兼容性问题
+						if (line.includes('Go version') && line.includes('too old')) {
+							const versionMatch = line.match(/go(\d+\.\d+\.\d+)/);
+							const currentVersion = versionMatch ? versionMatch[1] : 'unknown';
+							const warningMsg = `⚠️ Go Version Compatibility Issue: Your Go version (${currentVersion}) may be too old for this Delve version. Consider upgrading to Go 1.22 or newer.`;
+							outputChannel.appendLine(warningMsg);
+							globalGoDebugOutputProvider!.addOutput(warningMsg, safeOriginalConfig.name);
+						}
+						
+						// 检查 delve 分离
+						if (line.includes('detaching')) {
+							const detachMsg = `🔴 Delve is detaching - this usually indicates a compatibility issue or the debug session ended`;
+							outputChannel.appendLine(detachMsg);
+							globalGoDebugOutputProvider!.addOutput(detachMsg, safeOriginalConfig.name);
+						}
 					}
 				});
 			}
 		});
 		
-		// Wait for delve to be ready or timeout
-		while (!delveReady && (Date.now() - startWait) < maxWaitTime) {
-			await new Promise(resolve => setTimeout(resolve, 500));
-		}
-		
-		if (delveReady) {
-			outputChannel.appendLine(`🎯 Delve debug server is ready for connections`);
-			outputChannel.appendLine(`📱 Connect your debugger to: ${dlvHost}:${dlvPort}`);
-			outputChannel.appendLine(`💡 You can now attach a debugger client to the remote delve server`);
-			
+		// 新增：监听 VS Code 发送的 disconnect 命令
+		delveClient.on('vs-code-disconnect', (request: any) => {
+			const disconnectMsg = `🔴 VS Code sent disconnect command (seq: ${request.seq}) - Debug session ending`;
+			outputChannel.appendLine(disconnectMsg);
 			if (globalGoDebugOutputProvider) {
-				globalGoDebugOutputProvider.addOutput(
-					`🎯 Debug server ready - connect to ${dlvHost}:${dlvPort}`,
-					safeOriginalConfig.name
-				);
+				globalGoDebugOutputProvider.addOutput(disconnectMsg, safeOriginalConfig.name);
 			}
 			
-			// Show success message with connection info
-			// const action = await vscode.window.showInformationMessage(
-			// 	`Delve debug server started successfully on ${dlvHost}:${dlvPort}`,
-			// 	'Copy Connection Info',
-			// 	'Show Output'
-			// );
-			
-			// if (action === 'Copy Connection Info') {
-			// 	const connectionInfo = `dlv connect ${dlvHost}:${dlvPort}`;
-			// 	await vscode.env.clipboard.writeText(connectionInfo);
+			// 分析断开原因
+			const args = request.arguments || {};
+			if (args.restart) {
+				outputChannel.appendLine(`🔄 Disconnect reason: Restarting debug session`);
+			} else if (args.terminateDebuggee) {
+				outputChannel.appendLine(`🔴 Disconnect reason: Terminating debuggee`);
+			} else {
+				outputChannel.appendLine(`❓ Disconnect reason: Normal session end or user action`);
+			}
+		});
 		
-			// 	//vscode.window.showInformationMessage('Connection command copied to clipboard!');
-			// } else if (action === 'Show Output') {
-			// 	outputChannel.show();
-			// }
-			
-		} else {
-			DebugLogger.info(`⚠️ Delve server may not be fully ready yet, but process is running`, outputChannel);
-			DebugLogger.info(`📱 Try connecting to: ${dlvHost}:${dlvPort}`, outputChannel);
-		}
-		
-		// Handle process completion
-		delveProcess.on('exit', (code, signal) => {
+		delveClient.on('exit', (code: number | null, signal: string | null) => {
 			const runDuration = Date.now() - delveStartTime;
 			const exitMessage = signal 
 				? `Delve process terminated by signal ${signal} after ${runDuration}ms` 
 				: `Delve process exited with code ${code} after ${runDuration}ms`;
 			
 			outputChannel.appendLine(`\n${exitMessage}`);
+			
+			// 分析退出原因
+			if (code === 0) {
+				if (runDuration < 5000) {
+					outputChannel.appendLine(`📊 Analysis: Quick exit with code 0 suggests:`);
+					outputChannel.appendLine(`   • Program ran to completion without breakpoints`);
+					outputChannel.appendLine(`   • DAP session completed normally`);
+					outputChannel.appendLine(`   • Consider adding breakpoints to pause execution`);
+				} else {
+					outputChannel.appendLine(`📊 Analysis: Normal completion after ${runDuration}ms`);
+				}
+			} else if (code !== null && code !== 0) {
+				outputChannel.appendLine(`📊 Analysis: Error exit (code ${code}):`);
+				if (code === 1) {
+					outputChannel.appendLine(`   • General error - check binary and arguments`);
+				} else if (code === 2) {
+					outputChannel.appendLine(`   • Command line usage error - check dlv arguments`);
+				} else if (code === 130) {
+					outputChannel.appendLine(`   • Process interrupted (Ctrl+C)`);
+				}
+			}
 			
 			if (globalGoDebugOutputProvider) {
 				globalGoDebugOutputProvider.addOutput(
@@ -1570,11 +1684,14 @@ async function executeCompileAndDlvDebug(
 				}
 			}
 			
+			// Clean up debug server info
+			globalRunningDebugServers.delete(safeOriginalConfig.name);
+			
 			// Mark configuration as no longer running
 			stateManager.setConfigStopped(safeOriginalConfig.name);
 		});
 		
-		delveProcess.on('error', (error) => {
+		delveClient.on('error', (error: Error) => {
 			DebugLogger.error(`❌ Delve process error: ${error}`, outputChannel);
 			if (globalGoDebugOutputProvider) {
 				globalGoDebugOutputProvider.addOutput(
@@ -1583,8 +1700,115 @@ async function executeCompileAndDlvDebug(
 				);
 			}
 			
+			// Clean up debug server info on error
+			globalRunningDebugServers.delete(safeOriginalConfig.name);
 			stateManager.setConfigStopped(safeOriginalConfig.name);
 		});
+		
+		try {
+			await delveClient.start(absoluteBinaryPath, runConfig.args, runConfig.workingDir || workingDir, execEnv || {});
+		} catch (error) {
+			const errorMsg = `Failed to start Delve: ${error}`;
+			outputChannel.appendLine(`❌ ${errorMsg}`);
+			output_info(`❌ ${errorMsg}`, safeOriginalConfig.name);
+			throw error;
+		}
+		
+		const delveProcess = delveClient.getProcess();
+		if (!delveProcess) {
+			const errorMsg = `Delve process is null or undefined`;
+			outputChannel.appendLine(`❌ ${errorMsg}`);
+			output_info(`❌ ${errorMsg}`, safeOriginalConfig.name);
+			return;
+		}
+
+		if (!delveClient.IsReady()) {
+			const errorMsg = `Delve is not ready after startup`;
+			outputChannel.appendLine(`❌ ${errorMsg}`);
+			output_info(`❌ ${errorMsg}`, safeOriginalConfig.name);
+			return;
+		}
+	
+		
+		
+		// 如何告诉 vscode 我启动 dlv dap, 让 vscode 连接上呢？
+		// 1. 通过 stateManager 记录下当前配置的 dlv 进程等信息
+		// 2. vscode debug adapter 连接到这个 dlv 上
+		// 3. 需要在 debug adapter factory 里处理这种情况
+		// 4. 目前只能通过配置文件的方式，指定 debugServer 端口，来连接到已经启动的 dlv 上
+		// 5. 所以这里需要把 dlv 的端口告诉 debug adapter factory
+		
+		// 获取 dlv 服务器地址信息
+		
+		const delveAddress = delveClient.address();
+		const [host, port] =  [delveClient.getHost(), delveClient.getPort()] ;
+		
+		// 存储调试服务器信息到全局状态和运行配置中
+		const debugServerInfo = { host, port, address: delveAddress };
+		globalRunningDebugServers.set(safeOriginalConfig.name, debugServerInfo);
+		
+		// 添加一个更长的延迟确保 delve DAP 服务器完全准备好并且稳定
+		outputChannel.appendLine(`⏳ Waiting for delve DAP server to stabilize...`);
+		await new Promise(resolve => setTimeout(resolve, 2000));
+		
+		// Set configuration as running with process information
+		stateManager.setConfigRunning(safeOriginalConfig.name, {
+			mode: 'debug',
+			process: delveProcess,
+			startTime: Date.now(),
+			workingDir: workingDir,
+			binaryPath: absoluteBinaryPath,
+			debugServer: debugServerInfo,
+		});
+
+		DebugLogger.info(`DELVE process started with PID: ${delveProcess.pid}`, outputChannel);
+		outputChannel.appendLine(`✅ Delve started with PID: ${delveProcess.pid}`);
+		
+		output_info(
+			`🐛 Delve server started on ${delveAddress} (PID: ${delveProcess.pid})`,
+			safeOriginalConfig.name
+		);
+
+		// 等待一下确保 dlv 完全启动
+		await new Promise(resolve => setTimeout(resolve, 2000));
+
+		// 创建一个新的调试配置来连接到 dlv DAP 服务器
+		const dapConfig: vscode.DebugConfiguration = {
+			name: safeOriginalConfig.name,
+			type: 'go-debug-pro',
+			request: 'attach',
+			mode: 'remote',
+			host: host,
+			port: port,
+			remotePath: workingDir,
+			stopOnEntry: runConfig.stopOnEntry || false,
+			showLog: true,
+			trace: 'verbose',
+			program: absoluteBinaryPath,
+
+		};
+
+		outputChannel.appendLine(`\n🔗 Starting VS Code debug session to connect to dlv DAP server...`);
+		outputChannel.appendLine(`📋 DAP Configuration:`);
+		outputChannel.appendLine(JSON.stringify(dapConfig, null, 2));
+
+		// 启动 VS Code 调试会话连接到 dlv DAP 服务器
+		try {
+			const debugStarted = await vscode.debug.startDebugging(workspaceFolder, dapConfig);
+			if (debugStarted) {
+				outputChannel.appendLine(`✅ VS Code debug session started successfully`);
+				output_info(`✅ VS Code debug session connected to dlv DAP server`, safeOriginalConfig.name);
+			} else {
+				outputChannel.appendLine(`❌ Failed to start VS Code debug session`);
+				output_info(`❌ Failed to connect VS Code debug session to dlv DAP server`, safeOriginalConfig.name);
+			}
+		} catch (error) {
+			outputChannel.appendLine(`❌ Error starting debug session: ${error}`);
+			output_info(`❌ Error connecting to dlv DAP server: ${error}`, safeOriginalConfig.name);
+		}
+ 
+	 
+ 
 		
 	} catch (error) {
 		const errorMsg = `Failed to execute compile-first debug workflow: ${error}`;
@@ -1595,6 +1819,9 @@ async function executeCompileAndDlvDebug(
 				safeOriginalConfig.name
 			);
 		}
+		
+		// Clean up debug server info on error
+		globalRunningDebugServers.delete(safeOriginalConfig.name);
 		
 		//vscode.window.showErrorMessage(errorMsg);
 		throw error;
