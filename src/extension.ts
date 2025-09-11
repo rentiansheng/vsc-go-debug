@@ -1149,6 +1149,23 @@ class LegacyGoDebugConfigurationProvider implements vscode.DebugConfigurationPro
 			});
 		}
 
+		// 确保为 DAP 模式设置正确的配置
+		// 检查是否有对应的运行配置，如果有，使用其二进制路径
+		const configName = config.name;
+		if (configName) {
+			const debugServerInfo = globalRunningDebugServers.get(configName);
+			if (debugServerInfo) {
+				// 获取运行配置信息
+				const runningConfig = getConfigurationStateManager().getConfigState(configName);
+				if (runningConfig && runningConfig.binaryPath) {
+					// 设置二进制文件路径用于 DAP
+					config.program = runningConfig.binaryPath;
+					config.mode = 'exec';  // 告诉 delve 这是一个已编译的二进制文件
+					console.log(`🔧 Setting DAP config program to: ${config.program}`);
+				}
+			}
+		}
+
 		return config;
 	}
 }
@@ -2126,168 +2143,4 @@ async function executeRunWithDedicatedTerminal(
 }
 
  
-// Helper function to execute run mode with output capture
-async function executeRunWithOutput(
-	workspaceFolder: vscode.WorkspaceFolder,
-	runConfig: any,
-	safeOriginalConfig: any,
-	outputChannel: vscode.OutputChannel,
-	buildOutputChannel: vscode.OutputChannel,
-	programOutputChannel: vscode.OutputChannel
-): Promise<void> {
-	// Determine source directory and binary details
-	let sourceDir = workspaceFolder.uri.fsPath;
-	let outputBinary = 'main';
-	let sourcePath = '.';
-	
-	if (runConfig.program) {
-		let programPath = runConfig.program;
-		
-		// Handle ${workspaceFolder} replacement
-		if (programPath.includes('${workspaceFolder}')) {
-			programPath = programPath.replace('${workspaceFolder}', workspaceFolder.uri.fsPath);
-		}
-		
-		// If program path is relative, make it absolute
-		if (!path.isAbsolute(programPath)) {
-			programPath = path.resolve(workspaceFolder.uri.fsPath, programPath);
-		}
-		
-		// Determine source directory (where we'll run go build)
-		if (programPath.endsWith('.go')) {
-			// Single file: /path/to/main.go -> /path/to
-			sourceDir = path.dirname(programPath);
-			sourcePath = path.basename(programPath);
-			outputBinary = path.basename(programPath, '.go');
-		} else {
-			// Package/directory: /path/to/cmd/myapp -> /path/to/cmd/myapp
-			sourceDir = programPath;
-			sourcePath = '.';
-			outputBinary = path.basename(programPath) || 'main';
-		}
-	}
-	
-	// Create absolute path for the output binary
-	const absoluteBinaryPath = path.join(sourceDir, outputBinary);
-	
-	outputChannel.appendLine(`📂 Source directory: ${sourceDir}`);
-	outputChannel.appendLine(`📄 Source path: ${sourcePath}`);
-	outputChannel.appendLine(`📦 Output binary: ${outputBinary}`);
-	outputChannel.appendLine(`🎯 Absolute binary path: ${absoluteBinaryPath}`);
-	
-	// Step 1 & 2: Build the program using tasks
-	buildOutputChannel.appendLine(`🔨 Building Go program...`);
-	buildOutputChannel.appendLine(`📁 Source directory: ${sourceDir}`);
-	
-	// Build command
-	let goBuildCommand = 'go build';
-	
-	// Add build flags if any
-	if (runConfig.buildFlags) {
-		goBuildCommand += ` ${runConfig.buildFlags}`;
-		buildOutputChannel.appendLine(`🔧 Build flags: ${runConfig.buildFlags}`);
-	}
-	
-	// Add output and source
-	goBuildCommand += ` -o "${outputBinary}" ${sourcePath}`;
-	buildOutputChannel.appendLine(`💻 Command: ${goBuildCommand}`);
-	
-	// Execute build using task
-	const buildTask = new vscode.Task(
-		{ type: 'shell' },
-		workspaceFolder,
-		'Go Debug Pro: Build',
-		'Go Debug Pro',
-		new vscode.ShellExecution(goBuildCommand, { cwd: sourceDir }),
-		'$go'
-	);
-	
-	const buildExecution = await vscode.tasks.executeTask(buildTask);
-	
-	await new Promise<void>((resolve, reject) => {
-		const disposable = vscode.tasks.onDidEndTaskProcess((e) => {
-			if (e.execution === buildExecution) {
-				disposable.dispose();
-				if (e.exitCode === 0) {
-					DebugLogger.info(`Build completed successfully`, buildOutputChannel);
-					resolve();
-				} else {
-					DebugLogger.error(`❌ Build failed with exit code:  ${e.exitCode}`, buildOutputChannel);
-					reject(new Error(`Build failed with exit code: ${e.exitCode}`));
-				}
-			}
-		});
-	});
-	
-	// Step 3: Determine working directory
-	let workingDir = sourceDir;
-	if (runConfig.cwd) {
-		workingDir = runConfig.cwd.replace('${workspaceFolder}', workspaceFolder.uri.fsPath);
-		outputChannel.appendLine(`📂 Working directory: ${workingDir}`);
-	} else {
-		outputChannel.appendLine(`📂 Using source directory as working directory: ${workingDir}`);
-	}
-	
-	// Step 4: Execute the program using task
-	programOutputChannel.appendLine(`🚀 Starting program execution...`);
-	programOutputChannel.appendLine(`📍 Working directory: ${workingDir}`);
-	programOutputChannel.appendLine(`📦 Binary: ${absoluteBinaryPath}`);
-	
-	// Build execution command with environment variables
-	let executeCommand = '';
-	
-	// Add environment variables as prefix
-	if (runConfig.env && Object.keys(runConfig.env).length > 0) {
-		const envPrefix = Object.entries(runConfig.env)
-			.map(([key, value]) => `${key}="${value}"`)
-			.join(' ');
-		executeCommand += `${envPrefix} `;
-		programOutputChannel.appendLine(`🌍 Environment: ${envPrefix}`);
-	}
-	
-	// Add the binary path
-	executeCommand += `"${absoluteBinaryPath}"`;
-	
-	// Add program arguments
-	if (runConfig.args && runConfig.args.length > 0) {
-		executeCommand += ` ${runConfig.args.join(' ')}`;
-		programOutputChannel.appendLine(`⚡ Arguments: ${runConfig.args.join(' ')}`);
-	}
-	
-	programOutputChannel.appendLine(`💻 Command: ${executeCommand}`);
-	programOutputChannel.appendLine(`\n${'='.repeat(50)}`);
-	programOutputChannel.appendLine(`Program Output:`);
-	programOutputChannel.appendLine(`${'='.repeat(50)}`);
-	
-	// Execute program using task
-	const runTask = new vscode.Task(
-		{ type: 'shell' },
-		workspaceFolder,
-		'Go Debug Pro: Run',
-		'Go Debug Pro',
-		new vscode.ShellExecution(executeCommand, { cwd: workingDir }),
-		[]
-	);
-	
-	// Execute the task
-	const runExecution = await vscode.tasks.executeTask(runTask);
-	
-	// Monitor task completion
-	vscode.tasks.onDidEndTaskProcess((e) => {
-		if (e.execution === runExecution) {
-			programOutputChannel.appendLine(`\n${'='.repeat(50)}`);
-			programOutputChannel.appendLine(`Program completed with exit code: ${e.exitCode}`);
-			programOutputChannel.appendLine(`${'='.repeat(50)}`);
-			
-			if (e.exitCode === 0) {
-				DebugLogger.info(`✅ Program executed successfully`, programOutputChannel);
-				//vscode.window.showInformationMessage(`Program executed successfully: ${safeOriginalConfig.name}`);
-			} else {
-				DebugLogger.info(`⚠️ Program exited with code: ${e.exitCode}`, programOutputChannel);
-				//vscode.window.showWarningMessage(`Program exited with code ${e.exitCode}: ${safeOriginalConfig.name}`);
-			}
-		}
-	});
-	
-	outputChannel.appendLine(`✅ Program started - monitor output in 'Go Program' channel`);
-}
+ 
