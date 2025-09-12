@@ -247,7 +247,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 }
                 
                 // 设置调试状态
-                this.setSessionInfo(tabName, 'debug', 'running');
+                this.setSessionInfo(tabName, 'debug', 'running', session);
                 this.addOutput(`🚀 Debug session started: ${session.name}`, tabName);
                 
                 // 立即更新工具栏状态
@@ -260,7 +260,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             const tabName = session.configuration.name;
             console.log('[Go Debug Output] Debug session terminated:', tabName, session.type);
             if (session.type === 'go-debug-pro') {
-                this.setSessionInfo(tabName, 'debug', 'stopped');
+                this.setSessionInfo(tabName, 'debug', 'stopped', session);
                 this.addOutput(`🛑 Debug session terminated: ${session.name}`, tabName);
 
                 // 立即更新工具栏状态
@@ -444,8 +444,20 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             this.addOutput(`🛑 Stopping session: ${tabName}`, tabName);
             
             if (configState.action === 'debug') {
+                if (configState.session) {
+                    vscode.debug.stopDebugging(configState.session);
+                }
                 // Stop debug session using VS Code command
                 vscode.commands.executeCommand('workbench.action.debug.stop');
+            } else {
+                if(configState.process) {
+                    try {
+                        configState.process.kill();
+                    } catch(error) {
+                        console.error(`[stopSession] Error killing process for ${tabName}:`, error);
+                    }
+                  
+                }
             }
             
             // Use global state manager to stop the configuration
@@ -467,10 +479,10 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         await this.executeRun(tabName, "run");
     }
 
-    public setSessionInfo(tabName: string, type: 'debug' | 'run', status: 'running' | 'stopped', process?: any) {
+    public setSessionInfo(tabName: string, type: 'debug' | 'run', status: 'running' | 'stopped', session?: vscode.DebugSession) {
         // 兼容旧接口，转换为新的状态管理
         const state: 'running' | 'stopped' = status === 'running' ? 'running' : 'stopped';
-        this.globalStateManager.setState(tabName, type, state, process);
+        this.globalStateManager.setState(tabName, type, state, session);
     }
 
     private updateToolbarState(tabName: string) {
@@ -665,14 +677,14 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         const activeSessions = vscode.debug.activeDebugSession;
         if (activeSessions && activeSessions.type === 'go-debug-pro') {
             console.log('[Go Debug Output] Syncing with active debug session:', activeSessions.name);
-            this.setSessionInfo(activeSessions.name, 'debug', 'running');
+            this.setSessionInfo(activeSessions.name, 'debug', 'running', activeSessions);
         }
         
         // 检查所有调试会话
         for (const session of vscode.debug.activeDebugSession ? [vscode.debug.activeDebugSession] : []) {
             if (session.type === 'go-debug-pro') {
                 console.log('[Go Debug Output] Found active go-debug-pro session:', session.name);
-                this.setSessionInfo(session.name, 'debug', 'running');
+                this.setSessionInfo(session.name, 'debug', 'running', session);
             }
         }
     }

@@ -170,7 +170,7 @@ export class DelveClient extends EventEmitter {
 
   
 
-  async start(program: string, args: string[], workingDir: string, execEnv: NodeJS.ProcessEnv) {
+  async start(program: string, runName: string, args: string[], workingDir: string, execEnv: NodeJS.ProcessEnv) {
     try {
       this.port = await this.findFreePort();
       console.log("=== Delve Startup Debug Info ===");
@@ -199,6 +199,7 @@ export class DelveClient extends EventEmitter {
         "dap",
         `--listen=${this.address()}`,
         "--check-go-version=false",
+        "--accept-multiclient=true",
         "--log",
         "--log-output=debugger,dap",
         "--log-dest=2"  // 将日志输出到 stderr，便于调试
@@ -329,88 +330,10 @@ export class DelveClient extends EventEmitter {
         throw new Error("Delve startup timeout - process may have failed to start");
       }
     
-      console.log("Delve started successfully, attempting to connect...");
-  
-      // 连接到 delve
-      this.conn = net.createConnection(this.port, this.host);
-      this.conn.on("data", chunk => {
-        try {
-          const lines = chunk.toString().split('\n').filter(line => line.trim());
-          console.log(`📡 Received ${lines.length} DAP message(s) from delve`);
-          
-          for (const line of lines) {
-            console.log("📡 Raw DAP message from delve:", line);
-            
-            try {
-              const res = JSON.parse(line);
-              console.log("📋 Parsed DAP message:", {
-                type: res.type,
-                command: res.command,
-                event: res.event,
-                seq: res.seq,
-                request_seq: res.request_seq,
-                success: res.success,
-                message: res.message
-              });
-              
-              // 检查是否是来自 VS Code 的 disconnect 请求
-              if (res.type === 'request' && res.command === 'disconnect') {
-                console.log(`🔴 VS Code sent disconnect command:`, res);
-                this.emit('vs-code-disconnect', res);
-              }
-              
-              // 检查是否是事件消息
-              if (res.type === 'event') {
-                console.log(`📢 DAP Event: ${res.event}`, res.body);
-                this.emit('dap-event', res);
-              }
-              
-              // DAP 响应使用 request_seq 字段匹配请求
-              if (res.type === 'response' && res.request_seq && this.pending.has(res.request_seq)) {
-                console.log(`✅ Matched DAP response for seq ${res.request_seq}:`, {
-                  command: res.command,
-                  success: res.success,
-                  bodyKeys: res.body ? Object.keys(res.body) : [],
-                  message: res.message
-                });
-                this.pending.get(res.request_seq)?.(res);
-                this.pending.delete(res.request_seq);
-              }
-              // 未匹配的响应
-              else if (res.type === 'response') {
-                console.warn(`⚠️ Unmatched DAP response:`, {
-                  request_seq: res.request_seq,
-                  command: res.command,
-                  pendingRequests: Array.from(this.pending.keys()),
-                  message: res.message
-                });
-              }
-              // 兼容旧的 id 字段
-              else if (res.id && this.pending.has(res.id)) {
-                this.pending.get(res.id)?.(res);
-                this.pending.delete(res.id);
-              }
-            } catch (parseError) {
-              // 可能不是 JSON 消息，记录详细信息
-              console.warn("📄 Non-JSON message from delve:", {
-                line: line,
-                length: line.length,
-                parseError: parseError instanceof Error ? parseError.message : String(parseError)
-              });
-            }
-          }
-        } catch (error) {
-          console.error("❌ Error processing delve data:", error);
-          console.error("🔍 Chunk info:", {
-            chunkSize: chunk.length,
-            chunkPreview: chunk.toString().substring(0, 200)
-          });
-        }
-      });      
-      this.conn.on("error", (error) => {
-        console.error("Delve connection error:", error);
-      });
+      //this.initializeAndLaunch(program, args);
 
+      // 等待连接稳定后进行 DAP 初始化测试
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
       // // 设置连接超时为5秒
       // this.conn.setTimeout(5000);
@@ -420,26 +343,39 @@ export class DelveClient extends EventEmitter {
       //   this.proc?.kill();
       //   this.conn = null;
       // });
-    
+      
       console.log("Delve connection established successfully");
-    
-
       // 设置保持连接的心跳机制
       this.startKeepAlive();
-
-      // 等待连接稳定后进行 DAP 初始化测试
-      await new Promise(resolve => setTimeout(resolve, 1000));
+        
+      execEnv = { ...process.env, ...execEnv };
+      // 调用 VSCode Go 插件配置自动调试
+      const debugConfig = {
+        type: 'go',
+        name: runName,
+        request: 'launch',
+        mode: "exec",
+        host: this.host,
+        port: this.port,
+        program: program,
+        args: args,
+        env: execEnv,
+        cwd: workingDir,
+      };
       
-      console.log("🚀 Attempting DAP initialization...");
-      try {
-        await this.initializeAndLaunch(program, args);
-        console.log("🎉 DAP initialization completed successfully!");
-      } catch (error) {
-        console.error("❌ DAP initialization failed:", error);
-        console.log("🔍 Running connection diagnostics...");
+      const success = await vscode.debug.startDebugging(undefined, debugConfig);
+      if (!success) {
+        // TODO: add debug output tab
+        //vscode.window.showErrorMessage('启动调试失败');
+        this.emit('error', "远程调试连接失败");
 
-        throw error;
+        this.emit('error', "启动调试失败");
       }
+ 
+    
+
+
+      
  
     
     // DAP 请求发送完成，extension 现在控制调试会话
@@ -604,8 +540,7 @@ export class DelveClient extends EventEmitter {
       const configDoneResponse = await this.sendDAPRequest('configurationDone', {});
       console.log("✅ ConfigurationDone response received:", configDoneResponse);
       
-      console.log("🎉 DAP initialization completed successfully!");
-      this.sendDAPContinue();
+  
       
     } catch (error) {
       console.error("❌ DAP initialization failed:", error);

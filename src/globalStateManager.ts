@@ -11,7 +11,7 @@ export interface ConfigState {
     process?: any;
     startTime?: Date;
     endTime?: Date;
-    delveClient?: DelveClient;
+    session?: vscode.DebugSession; 
 }
 
 /**
@@ -48,7 +48,7 @@ export class GlobalStateManager {
     /**
      * 设置配置状态
      */
-    public setState(configName: string, action: 'debug' | 'run', state: 'running' | 'stopped' | 'starting' | 'stopping', process?: any): void {
+    public setState(configName: string, action: 'debug' | 'run', state: 'running' | 'stopped' | 'starting' | 'stopping', process?: any, session?: vscode.DebugSession): void {
         const oldState = this.stateMap.get(configName);
         const newState: ConfigState = {
             name: configName,
@@ -56,7 +56,8 @@ export class GlobalStateManager {
             state,
             process,
             startTime: state === 'starting' || state === 'running' ? new Date() : oldState?.startTime,
-            endTime: state === 'stopped' ? new Date() : undefined
+            endTime: state === 'stopped' ? new Date() : undefined,
+            session
         };
         
         this.stateMap.set(configName, newState);
