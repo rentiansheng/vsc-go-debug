@@ -603,6 +603,20 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    /**
+     * 更新变量和调用栈信息
+     */
+    public updateVariablesAndStack(tabName: string, variables?: any[], callStack?: any[]) {
+        if (this._view) {
+            this._view.webview.postMessage({
+                command: 'updateVariables',
+                tabName: tabName,
+                variables: variables || [],
+                callStack: callStack || []
+            });
+        }
+    }
+
     public refreshConfigurations() {
         this.loadConfigurations();
     }
@@ -920,6 +934,33 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             margin: 0 4px;
         }
         
+        .view-tabs {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .view-tab {
+            padding: 4px 8px;
+            cursor: pointer;
+            font-size: 11px;
+            border-radius: 3px;
+            background-color: var(--vscode-tab-inactiveBackground);
+            color: var(--vscode-tab-inactiveForeground);
+            border: 1px solid var(--vscode-panel-border);
+            transition: all 0.2s ease;
+        }
+        
+        .view-tab:hover {
+            background-color: var(--vscode-tab-hoverBackground);
+        }
+        
+        .view-tab.active {
+            background-color: var(--vscode-tab-activeBackground);
+            color: var(--vscode-tab-activeForeground);
+            border-color: var(--vscode-focusBorder);
+        }
+        
         .output-content {
             flex: 1;
             overflow-y: auto;
@@ -928,6 +969,69 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             min-height: 0; /* 允许flex子项收缩 */
             max-height: 100%; /* 确保不超出容器 */
             scroll-behavior: smooth; /* 平滑滚动 */
+        }
+        
+        .variables-content {
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            min-height: 0;
+            max-height: 100%;
+        }
+        
+        .variables-panel {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+        
+        .variables-section, .stack-section {
+            flex: 1;
+            padding: 10px;
+            border-bottom: 1px solid var(--vscode-panel-border);
+        }
+        
+        .variables-section h4, .stack-section h4 {
+            margin: 0 0 8px 0;
+            font-size: 12px;
+            font-weight: bold;
+            color: var(--vscode-foreground);
+            border-bottom: 1px solid var(--vscode-panel-border);
+            padding-bottom: 4px;
+        }
+        
+        .variables-list, .stack-list {
+            font-family: var(--vscode-editor-font-family);
+            font-size: 11px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .variable-item, .stack-item {
+            padding: 2px 4px;
+            margin: 1px 0;
+            border-radius: 2px;
+            cursor: pointer;
+        }
+        
+        .variable-item:hover, .stack-item:hover {
+            background-color: var(--vscode-list-hoverBackground);
+        }
+        
+        .variable-name {
+            color: var(--vscode-debugTokenExpression-name);
+            font-weight: bold;
+        }
+        
+        .variable-value {
+            color: var(--vscode-debugTokenExpression-value);
+            margin-left: 8px;
+        }
+        
+        .variable-type {
+            color: var(--vscode-debugTokenExpression-type);
+            font-style: italic;
+            margin-left: 4px;
         }
         
         /* 自定义滚动条样式，使其与VSCode主题匹配 */
@@ -1043,7 +1147,13 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                         <button class="toolbar-button" data-action="stepOut" title="Step Out" disabled>
                             <span class="codicon codicon-debug-step-out"></span>
                         </button>
+                        <div class="toolbar-separator"></div>
+                        <div class="view-tabs">
+                            <span class="view-tab" data-view="variables" onclick="switchView('\${configName}', 'variables')">Variables And Stack</span>
+                            <span class="view-tab active" data-view="console" onclick="switchView('\${configName}', 'console')">Console</span>
+                        </div>
                     </div>
+     
                 \`;
                 
                 // Add event listeners to toolbar buttons
@@ -1051,6 +1161,17 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                     const target = e.target;
                     if (target) {
                         let action = "";
+                        
+                        // Handle view tab clicks
+                        if (target.classList && target.classList.contains('view-tab')) {
+                            const viewType = target.getAttribute('data-view');
+                            if (viewType) {
+                                switchView(configName, viewType);
+                                return;
+                            }
+                        }
+                        
+                        // Handle toolbar button clicks
                         if(target.classList && target.classList.contains('toolbar-button')) {
                             action = target.getAttribute('data-action');
                         } else {
@@ -1075,8 +1196,30 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 outputContent.className = 'output-content';
                 outputContent.innerHTML = '<div class="empty-state">No debug output yet for this configuration.</div>';
                 
+                // Create variables view content (initially hidden)
+                const variablesContent = document.createElement('div');
+                variablesContent.className = 'variables-content';
+                variablesContent.style.display = 'none';
+                variablesContent.innerHTML = \`
+                    <div class="variables-panel">
+                        <div class="variables-section">
+                            <h4>Variables</h4>
+                            <div class="variables-list">
+                                <div class="empty-state">No variables available. Start debugging to see variables.</div>
+                            </div>
+                        </div>
+                        <div class="stack-section">
+                            <h4>Call Stack</h4>
+                            <div class="stack-list">
+                                <div class="empty-state">No call stack available. Start debugging to see call stack.</div>
+                            </div>
+                        </div>
+                    </div>
+                \`;
+                
                 tabContent.appendChild(toolbar);
                 tabContent.appendChild(outputContent);
+                tabContent.appendChild(variablesContent);
                 outputContainer.appendChild(tabContent);
                 
                 // If this is the first tab, make it active and hide the empty state
@@ -1228,8 +1371,105 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             }, 3000);
         }
         
+        function switchView(configName, viewType) {
+            const tabContent = document.querySelector(\`[data-content="\${configName}"]\`);
+            if (!tabContent) return;
+            
+            const outputContent = tabContent.querySelector('.output-content');
+            const variablesContent = tabContent.querySelector('.variables-content');
+            const viewTabs = tabContent.querySelectorAll('.view-tab');
+            
+            // Update tab states
+            viewTabs.forEach(tab => {
+                tab.classList.remove('active');
+                if (tab.getAttribute('data-view') === viewType) {
+                    tab.classList.add('active');
+                }
+            });
+            
+            // Show/hide content based on view type
+            if (viewType === 'console') {
+                outputContent.style.display = 'block';
+                variablesContent.style.display = 'none';
+            } else if (viewType === 'variables') {
+                outputContent.style.display = 'none';
+                variablesContent.style.display = 'block';
+                // Update variables and stack when switching to this view
+                updateVariablesView(configName);
+            }
+        }
+        
+        function updateVariablesView(configName) {
+            // This function will be called to update variables and call stack
+            // For now, we'll just show placeholder content
+            const tabContent = document.querySelector(\`[data-content="\${configName}"]\`);
+            if (!tabContent) return;
+            
+            const variablesContent = tabContent.querySelector('.variables-content');
+            if (!variablesContent) return;
+            
+            // In a real implementation, you would fetch actual debug data here
+            // For now, we'll show some example data
+            const variablesList = variablesContent.querySelector('.variables-list');
+            const stackList = variablesContent.querySelector('.stack-list');
+            
+            if (variablesList) {
+                variablesList.innerHTML = \`
+                    <div class="variable-item">
+                        <span class="variable-name">example_var</span>
+                        <span class="variable-value">"hello world"</span>
+                        <span class="variable-type">string</span>
+                    </div>
+                    <div class="variable-item">
+                        <span class="variable-name">counter</span>
+                        <span class="variable-value">42</span>
+                        <span class="variable-type">int</span>
+                    </div>
+                \`;
+            }
+            
+            if (stackList) {
+                stackList.innerHTML = \`
+                    <div class="stack-item">main.main() at main.go:10</div>
+                    <div class="stack-item">runtime.main() at proc.go:250</div>
+                \`;
+            }
+        }
+        
+        function updateVariablesData(configName, variables, callStack) {
+            const tabContent = document.querySelector(\`[data-content="\${configName}"]\`);
+            if (!tabContent) return;
+            
+            const variablesContent = tabContent.querySelector('.variables-content');
+            if (!variablesContent) return;
+            
+            const variablesList = variablesContent.querySelector('.variables-list');
+            const stackList = variablesContent.querySelector('.stack-list');
+            
+            // Update variables
+            if (variablesList && variables && variables.length > 0) {
+                variablesList.innerHTML = variables.map(variable => \`
+                    <div class="variable-item">
+                        <span class="variable-name">\${variable.name}</span>
+                        <span class="variable-value">\${variable.value}</span>
+                        <span class="variable-type">\${variable.type}</span>
+                    </div>
+                \`).join('');
+            } else if (variablesList) {
+                variablesList.innerHTML = '<div class="empty-state">No variables available.</div>';
+            }
+            
+            // Update call stack
+            if (stackList && callStack && callStack.length > 0) {
+                stackList.innerHTML = callStack.map(frame => \`
+                    <div class="stack-item">\${frame.name} at \${frame.source}:\${frame.line}</div>
+                \`).join('');
+            } else if (stackList) {
+                stackList.innerHTML = '<div class="empty-state">No call stack available.</div>';
+            }
+        }
+        
         function updateToolbar(tabName, configState) {
-            const toolbar = document.querySelector(\`[data-content="\${tabName}"]\`);
             if (!toolbar) {
                 console.warn(\`Toolbar not found for tab: \${tabName}\`);
                 return;
@@ -1387,6 +1627,12 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                     if (message.startTime) {
                         const duration = calculateDurationJS(message.startTime);
                         updateDuration(message.tabName, duration);
+                    }
+                    break;
+                case 'updateVariables':
+                    // Update variables view with debug data
+                    if (message.tabName && message.variables) {
+                        updateVariablesData(message.tabName, message.variables, message.callStack);
                     }
                     break;
             }
