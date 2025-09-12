@@ -9,7 +9,7 @@ import * as cp from 'child_process';
 import { WatchExpressionProvider } from './watchProvider';
 import { ConditionalBreakpointManager } from './breakpointManager';
 import { DebugConfigurationProvider } from './debugConfigProvider';
-import { RunConfigurationManager } from './runConfigManager';
+import { RunConfigItem, RunConfigurationManager } from './runConfigManager';
 import { RunConfigWebviewProvider } from './runConfigWebview';
 import { GoDebugConfigurationProvider as GoDebugConfigProvider } from './goDebugConfigurationProvider';
 import { ConfigurationEditorProvider } from './configurationEditorProvider';
@@ -83,9 +83,12 @@ class ConfigurationStateManager {
 	// 清理所有已退出的进程，防止状态假阳性
 	private cleanupExitedConfigs() {
 		for (const [name, config] of this.runningConfigs.entries()) {
-			if (config.process.killed || config.process.exitCode !== null) {
-				this.runningConfigs.delete(name);
+			if (!config.process || config.process.killed || config.process.exitCode !== null) {
+				if (config.debugSession) {
+					vscode.debug.stopDebugging(config.debugSession);
+				}
 			}
+
 		}
 	}
 
@@ -150,7 +153,7 @@ class ConfigurationStateManager {
 
 		// Check if process is still alive
 		if (config.process.killed || config.process.exitCode !== null) {
-			this.runningConfigs.delete(configName);
+			//this.runningConfigs.delete(configName);
 			return false;
 		}
 
@@ -158,7 +161,7 @@ class ConfigurationStateManager {
 	}
 
 	getConfigState(configName: string): RunningConfig | undefined {
-		if (this.isConfigRunning(configName)) {
+		if (this.runningConfigs.has(configName)) {
 			return this.runningConfigs.get(configName);
 		}
 		return undefined;
@@ -181,16 +184,20 @@ class ConfigurationStateManager {
 			config.process
 		);
 
-		// Monitor process exit
-		config.process.on('exit', (code, signal) => {
-			DebugLogger.log(`Process for ${configName} exited with code ${code}, signal ${signal}`);
-			this.setConfigStopped(configName);
-		});
+		if (config.process) {
 
-		config.process.on('error', (error) => {
-			DebugLogger.error(`Process error for ${configName}: ${error}`);
-			this.setConfigStopped(configName);
-		});
+
+			// Monitor process exit
+			config.process.on('exit', (code, signal) => {
+				DebugLogger.log(`Process for ${configName} exited with code ${code}, signal ${signal}`);
+				this.setConfigStopped(configName);
+			});
+
+			config.process.on('error', (error) => {
+				DebugLogger.error(`Process error for ${configName}: ${error}`);
+				this.setConfigStopped(configName);
+			});
+		}
 		if (globalDebugConfigProvider) {
 			globalDebugConfigProvider.refresh();
 		}
@@ -239,7 +246,7 @@ class ConfigurationStateManager {
 			}
 
 
-			this.runningConfigs.delete(configName);
+			//this.runningConfigs.delete(configName);
 
 			// Clean up debug server info if exists
 			this.cleanupDebugServer(configName);
@@ -354,6 +361,8 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 	// TODO: 如果已经展示，无需在 show
 	//outputChannel.show();
 
+
+
 	try {
 		outputChannel.appendLine(`\n=== Go Debug Pro Execution Log ===`);
 		outputChannel.appendLine(`Time: ${new Date().toLocaleString()}`);
@@ -382,7 +391,8 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 			config = configItem;
 		}
 		config.mode = mode.toLocaleLowerCase();
-
+		const stateManager = ConfigurationStateManager.getInstance();
+		stateManager.setConfigRunning(config.name, config);
 		// Create a safe copy of the configuration to avoid circular references
 		const safeOriginalConfig = {
 			name: config.name,
@@ -784,6 +794,8 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
+
+
 	// New restart and terminate commands
 	context.subscriptions.push(
 		vscode.commands.registerCommand('goDebugPro.restartRunConfig', async (item) => {
@@ -950,20 +962,26 @@ Recent debugging sessions and configuration details are logged to the output cha
 				console.log('Go Debug Pro session started');
 				watchProvider.onSessionStarted(session);
 				breakpointManager.onSessionStarted(session);
-
+				if (!session.configuration) {
+					return;
+				}
 				// Update the running configuration with the debug session
 				const configName = session.configuration?.name;
 				if (configName) {
 					const runningConfig = stateManager.getConfigState(configName);
+					if (!runningConfig) {
+						return;
+					}
 					if (runningConfig && runningConfig.mode === 'debug') {
 						if (runningConfig.debugSession && runningConfig.debugSession.id !== session.id) {
 							vscode.debug.stopDebugging(runningConfig.debugSession);
 						}
-						// Update the running config with the debug session
-						runningConfig.debugSession = session;
-						stateManager.setConfigRunning(configName, runningConfig);
 
 					}
+					// Update the running config with the debug session
+					runningConfig.debugSession = session;
+					stateManager.setConfigRunning(configName, runningConfig);
+
 				}
 
 				// Create a tab for this configuration in the output panel
@@ -1110,7 +1128,7 @@ async function restartConfiguration(
 		setTimeout(async () => {
 			// Refresh the tree to update icons
 			debugConfigProvider.refresh();
-
+			
 			// Restart with the same mode
 			await runDebugConfiguration(item, mode);
 		}, 1500);
@@ -1148,7 +1166,7 @@ export async function terminateConfiguration(
 // This method is called when your extension is deactivated
 export function deactivate() { }
 
- 
+
 
 // Helper function to execute compile-first then dlv remote debug workflow
 async function executeCompileAndDlvDebug(

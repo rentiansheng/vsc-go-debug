@@ -398,12 +398,17 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    public findConfigurationByName(name: string): any | undefined {
+        return this._configurations.find(c => c.name === name);
+    }
+
     private async executeRun(tabName: string, mode: string) {
         console.log(`[executeRun] Looking for configuration: "${tabName}"`);
         console.log(`[executeRun] Available configurations:`, this._configurations.map(c => c.name));
         
+
         // Find configuration and execute it
-        const config = this._configurations.find(c => c.name === tabName);
+        const config = this.findConfigurationByName(tabName);
         if (config) {
             console.log(`[executeRun] Found configuration:`, config);
             const sessionType: 'debug' | 'run' =  mode === 'run' ? 'run' : 'debug';
@@ -526,8 +531,6 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 duration: this.calculateDuration(newState.startTime, newState.endTime),
                 isActive: isRunning,
                 isStopped: isStopped,
-                // 根据状态生成显示文本
-                stateText: this.getStateDisplayText(newState.state),
                 // 状态颜色
                 stateColor: this.getStateColor(newState.state)
             };
@@ -546,23 +549,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    /**
-     * 获取状态显示文本
-     */
-    private getStateDisplayText(state: string): string {
-        switch (state) {
-            case 'running':
-                return '运行中';
-            case 'stopped':
-                return '已停止';
-            case 'starting':
-                return '启动中';
-            case 'stopping':
-                return '停止中';
-            default:
-                return '未知状态';
-        }
-    }
+
 
     /**
      * 获取状态颜色
@@ -1088,10 +1075,6 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                         <button class="toolbar-button" data-action="stepOut" title="Step Out" disabled>
                             <span class="codicon codicon-debug-step-out"></span>
                         </button>
-                    </div>
-                    <div class="state-info">
-                        <span class="state-badge" data-state="stopped">已停止</span>
-                        <span class="duration-info" style="display: none;"></span>
                     </div>
                 \`;
                 
