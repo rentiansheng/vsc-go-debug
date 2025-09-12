@@ -846,34 +846,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             gap: 8px;
             font-size: 11px;
         }
-        
-        .state-badge {
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 10px;
-            font-weight: bold;
-            text-transform: uppercase;
-        }
-        
-        .state-badge[data-state="running"] {
-            background-color: var(--vscode-terminal-ansiGreen);
-            color: var(--vscode-terminal-background);
-        }
-        
-        .state-badge[data-state="starting"] {
-            background-color: var(--vscode-terminal-ansiYellow);
-            color: var(--vscode-terminal-background);
-        }
-        
-        .state-badge[data-state="stopped"] {
-            background-color: var(--vscode-descriptionForeground);
-            color: var(--vscode-terminal-background);
-        }
-        
-        .state-badge[data-state="stopping"] {
-            background-color: var(--vscode-terminal-ansiRed);
-            color: var(--vscode-terminal-background);
-        }
+ 
         
         .duration-info {
             color: var(--vscode-descriptionForeground);
@@ -1070,10 +1043,6 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                         <button class="toolbar-button" data-action="stepOut" title="Step Out" disabled>
                             <span class="codicon codicon-debug-step-out"></span>
                         </button>
-                    </div>
-                    <div class="state-info">
-                        <span class="state-badge" data-state="stopped">已停止</span>
-                        <span class="duration-info" style="display: none;"></span>
                     </div>
                 \`;
                 
