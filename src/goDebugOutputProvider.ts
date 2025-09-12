@@ -537,19 +537,14 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             
             console.log(`[GoDebugOutputProvider] Updating state display for ${configName}:`, stateDisplayInfo);
             
-            this._view.webview.postMessage({
-                command: 'updateStateDisplay',
-                tabName: configName,
-                stateInfo: stateDisplayInfo
-            });
-            
+     
             // 同时更新标签页标题，显示运行状态
             this.updateTabTitle(configName, newState);
             this.updateToolbarState(configName);
         }
     }
 
-
+ 
 
     /**
      * 获取状态颜色
@@ -597,7 +592,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     private updateTabTitle(configName: string, state: any) {
         if (this._view) {
             const statusIcon = state.state === 'running' ? '🟢' : 
-                             state.state === 'starting' ? '🟡' : '⚫';
+                             state.state === 'starting' ? '🟡' : '⚫' ;
             const titleWithStatus = `${statusIcon} ${configName}`;
             
             this._view.webview.postMessage({
@@ -1076,6 +1071,10 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                             <span class="codicon codicon-debug-step-out"></span>
                         </button>
                     </div>
+                    <div class="state-info">
+                        <span class="state-badge" data-state="stopped">已停止</span>
+                        <span class="duration-info" style="display: none;"></span>
+                    </div>
                 \`;
                 
                 // Add event listeners to toolbar buttons
@@ -1360,54 +1359,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             }
         }
         
-        function updateStateDisplay(tabName, stateInfo) {
-            const toolbar = document.querySelector(\`[data-tab="\${tabName}"]\`);
-            if (!toolbar) {
-                console.warn(\`Toolbar not found for state update: \${tabName}\`);
-                return;
-            }
-            
-            console.log(\`[JS] Updating state display for \${tabName}:\`, stateInfo);
-            
-            // Update state badge
-            const stateBadge = toolbar.querySelector('.state-badge');
-            if (stateBadge) {
-                // 使用 stateInfo.isStopped 来决定显示状态
-                if (stateInfo.isStopped) {
-                    stateBadge.setAttribute('data-state', 'stopped');
-                    stateBadge.textContent = '已停止';
-                    stateBadge.style.backgroundColor = '#757575';
-                } else if (stateInfo.isActive) {
-                    stateBadge.setAttribute('data-state', 'running');
-                    const badgeText = stateInfo.action === 'debug' ? '调试中' : '运行中';
-                    stateBadge.textContent = stateInfo.processId ? 
-                        \`\${badgeText} (PID: \${stateInfo.processId})\` : badgeText;
-                    stateBadge.style.backgroundColor = '#4CAF50';
-                } else {
-                    // 根据具体状态设置
-                    stateBadge.setAttribute('data-state', stateInfo.state);
-                    let badgeText = stateInfo.stateText || stateInfo.state;
-                    if (stateInfo.processId && stateInfo.state !== 'stopped') {
-                        badgeText += \` (PID: \${stateInfo.processId})\`;
-                    }
-                    stateBadge.textContent = badgeText;
-                    stateBadge.style.backgroundColor = stateInfo.stateColor || '#757575';
-                }
-                
-                console.log(\`[JS] State badge updated for \${tabName}: \${stateBadge.textContent}\`);
-            }
-            
-            // Update duration info
-            const durationInfo = toolbar.querySelector('.duration-info');
-            if (durationInfo && stateInfo.duration) {
-                durationInfo.textContent = \`运行时长: \${stateInfo.duration}\`;
-                durationInfo.style.display = stateInfo.isActive ? 'inline' : 'none';
-            } else if (durationInfo) {
-                durationInfo.style.display = 'none';
-            }
-            
-            console.log(\`[JS] Updated state display for \${tabName}:\`, stateInfo);
-        }
+   
         
         function updateTabTitle(tabName, newTitle) {
             const tab = document.querySelector(\`[data-tab="\${tabName}"]\`);
@@ -1457,9 +1409,6 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'updateToolbar':
                     updateToolbar(message.tabName, message.sessionInfo);
-                    break;
-                case 'updateStateDisplay':
-                    updateStateDisplay(message.tabName, message.stateInfo);
                     break;
                 case 'updateTabTitle':
                     updateTabTitle(message.tabName, message.newTitle);
