@@ -262,6 +262,15 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             if (session.type === 'go-debug-pro') {
                 this.setSessionInfo(tabName, 'debug', 'stopped', session);
                 this.addOutput(`🛑 Debug session terminated: ${session.name}`, tabName);
+                this.addOutput(`📊 Session summary: Configuration "${tabName}" ended`, tabName);
+                
+                // 检查是否是正常结束还是异常结束
+                const configState = this.globalStateManager.getState(tabName);
+                if (configState && configState.startTime) {
+                    const duration = new Date().getTime() - configState.startTime.getTime();
+                    const durationStr = this.formatDuration(duration);
+                    this.addOutput(`⏱️ Total debug session duration: ${durationStr}`, tabName);
+                }
 
                 // 立即更新工具栏状态
                 setTimeout(() => this.updateToolbarState(tabName), 100);
@@ -281,7 +290,10 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
 
     public addOutput(message: string, tabName: string = 'General') {
         const timestamp = new Date().toLocaleTimeString();
-        const logEntry = `[${timestamp}] ${message}`;
+        
+        // Process Delve-specific messages
+        const processedMessage = this.processDelveMessage(message);
+        const logEntry = `[${timestamp}] ${processedMessage}`;
         
         if (!this._outputTabs.has(tabName)) {
             this._outputTabs.set(tabName, []);
@@ -298,6 +310,106 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
         
         this._updateWebview(tabName, logEntry);
+    }
+
+    /**
+     * 处理 Delve 调试器的特定消息
+     */
+    private processDelveMessage(message: string): string {
+        // Handle Delve DAP protocol messages
+        if (message.includes('layer=dap')) {
+            if (message.includes('"command":"disconnect"')) {
+                return '🔌 Disconnect command received from client';
+            } else if (message.includes('layer=dap halting')) {
+                return '⏹️ Delve debugger halting...';
+            } else if (message.includes('process not running')) {
+                return '⚪ Target process is not running';
+            } else if (message.includes('"event":"output"')) {
+                return '📤 DAP Output Event';
+            } else if (message.includes('"event":"terminated"')) {
+                return '🛑 Debug Session Terminated';
+            } else if (message.includes('"event":"stopped"')) {
+                return '⏸️ Debug Session Stopped (Breakpoint Hit)';
+            } else if (message.includes('"type":"response"')) {
+                return '↩️ DAP Response';
+            } else if (message.includes('DAP server stopping')) {
+                return '⏹️ DAP Server Stopping';
+            } else if (message.includes('DAP server stopped')) {
+                return '✅ DAP Server Stopped';
+            } else if (message.includes('[<- from client]')) {
+                return '📩 DAP Command from client';
+            } else if (message.includes('[-> to client]')) {
+                return '📤 DAP Response to client';
+            }
+        }
+        
+        // Handle Delve process messages
+        if (message.includes('Delve process exited with code:')) {
+            const match = message.match(/code: (\d+)/);
+            const code = match ? match[1] : 'unknown';
+            if (code === '0') {
+                return `✅ Delve process completed successfully (exit code: ${code})`;
+            } else {
+                return `❌ Delve process failed (exit code: ${code})`;
+            }
+        }
+        
+        // Handle warnings about quick exits
+        if (message.includes('Delve exited quickly')) {
+            return '⚠️ Debug session ended quickly - possible reasons:';
+        }
+        
+        if (message.includes('Program ran to completion')) {
+            return '   📋 Program executed to completion (no breakpoints hit)';
+        }
+        
+        if (message.includes('DAP session ended normally')) {
+            return '   ✅ Debug session ended normally';
+        }
+        
+        if (message.includes('No debugging target was provided')) {
+            return '   ❌ No debugging target specified';
+        }
+        
+        // Handle detaching messages
+        if (message.includes('Detaching and terminating target process')) {
+            return '🔌 Detaching from target process...';
+        }
+        
+        if (message.includes('layer=debugger detaching')) {
+            return '🔄 Debugger detaching from process';
+        }
+        
+        return message;
+    }
+
+    /**
+     * 处理来自调试适配器的输出
+     */
+    public handleDebugAdapterOutput(output: string, tabName: string) {
+        // Split multi-line output and process each line
+        const lines = output.split('\n').filter(line => line.trim().length > 0);
+        
+        for (const line of lines) {
+            if (line.includes('dlv stderr:')) {
+                // Extract the actual Delve message
+                const match = line.match(/dlv stderr: (.+)/);
+                if (match) {
+                    this.addOutput(match[1], tabName);
+                }
+            } else if (line.includes('Delve process exited')) {
+                this.addOutput(line, tabName);
+            } else if (line.includes('Delve exited quickly')) {
+                this.addOutput(line, tabName);
+            } else if (line.includes('Program ran to completion') || 
+                      line.includes('DAP session ended normally') ||
+                      line.includes('No debugging target was provided')) {
+                this.addOutput(line, tabName);
+            } else {
+                // For other debug output
+                this.addOutput(line, tabName);
+            }
+        }
     }
 
 
@@ -693,6 +805,21 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    /**
+     * 格式化持续时间
+     */
+    private formatDuration(duration: number): string {
+        if (duration < 1000) {
+            return `${duration}ms`;
+        } else if (duration < 60000) {
+            return `${Math.floor(duration / 1000)}s`;
+        } else {
+            const minutes = Math.floor(duration / 60000);
+            const seconds = Math.floor((duration % 60000) / 1000);
+            return `${minutes}m ${seconds}s`;
+        }
+    }
+
     private _switchToTab(tabName: string) {
         if (this._view) {
             this._view.webview.postMessage({
@@ -981,14 +1108,50 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         
         .variables-panel {
             display: flex;
-            flex-direction: column;
+            flex-direction: row;
             height: 100%;
+            position: relative;
         }
         
-        .variables-section, .stack-section {
+        .stack-section {
+            width: 25%;
+            min-width: 150px;
+            max-width: 60%;
+            padding: 10px;
+            border-right: 1px solid var(--vscode-panel-border);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .variables-section {
             flex: 1;
             padding: 10px;
-            border-bottom: 1px solid var(--vscode-panel-border);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-width: 0;
+        }
+        
+        .resize-handle {
+            width: 4px;
+            background-color: var(--vscode-panel-border);
+            cursor: col-resize;
+            position: relative;
+            flex-shrink: 0;
+        }
+        
+        .resize-handle:hover {
+            background-color: var(--vscode-focusBorder);
+        }
+        
+        .resize-handle::after {
+            content: '';
+            position: absolute;
+            left: -2px;
+            right: -2px;
+            top: 0;
+            bottom: 0;
         }
         
         .variables-section h4, .stack-section h4 {
@@ -1003,8 +1166,13 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         .variables-list, .stack-list {
             font-family: var(--vscode-editor-font-family);
             font-size: 11px;
-            max-height: 200px;
+            flex: 1;
             overflow-y: auto;
+            padding: 4px;
+            background-color: var(--vscode-editor-background);
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 3px;
+            margin-top: 8px;
         }
         
         .variable-item, .stack-item {
@@ -1086,6 +1254,59 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         const vscode = acquireVsCodeApi();
         let activeTab = null;
         let tabs = new Map();
+        
+        function setupResizeHandlers(configName) {
+            const tabContent = document.querySelector(\`[data-content="\${configName}"]\`);
+            if (!tabContent) return;
+            
+            const resizeHandle = tabContent.querySelector('.resize-handle');
+            const stackSection = tabContent.querySelector('.stack-section');
+            const variablesPanel = tabContent.querySelector('.variables-panel');
+            
+            if (!resizeHandle || !stackSection || !variablesPanel) return;
+            
+            let isResizing = false;
+            let startX = 0;
+            let startWidth = 0;
+            
+            resizeHandle.addEventListener('mousedown', (e) => {
+                isResizing = true;
+                startX = e.clientX;
+                startWidth = stackSection.offsetWidth;
+                
+                document.addEventListener('mousemove', handleMouseMove);
+                document.addEventListener('mouseup', handleMouseUp);
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+                
+                e.preventDefault();
+            });
+            
+            function handleMouseMove(e) {
+                if (!isResizing) return;
+                
+                const deltaX = e.clientX - startX;
+                const newWidth = startWidth + deltaX;
+                const panelWidth = variablesPanel.offsetWidth;
+                
+                // Calculate percentage, maintaining 1:3 ratio as default
+                const minWidthPx = 150;  // minimum width for stack
+                const maxWidthPx = panelWidth * 0.6;  // maximum 60% for stack
+                
+                if (newWidth >= minWidthPx && newWidth <= maxWidthPx) {
+                    const widthPercent = (newWidth / panelWidth) * 100;
+                    stackSection.style.width = \`\${widthPercent}%\`;
+                }
+            }
+            
+            function handleMouseUp() {
+                isResizing = false;
+                document.removeEventListener('mousemove', handleMouseMove);
+                document.removeEventListener('mouseup', handleMouseUp);
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }
+        }
         
         function createTab(configName) {
             if (!tabs.has(configName)) {
@@ -1202,16 +1423,17 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 variablesContent.style.display = 'none';
                 variablesContent.innerHTML = \`
                     <div class="variables-panel">
-                        <div class="variables-section">
-                            <h4>Variables</h4>
-                            <div class="variables-list">
-                                <div class="empty-state">No variables available. Start debugging to see variables.</div>
-                            </div>
-                        </div>
                         <div class="stack-section">
-                            <h4>Call Stack</h4>
+                            <h6>Call Stack</h6>
                             <div class="stack-list">
                                 <div class="empty-state">No call stack available. Start debugging to see call stack.</div>
+                            </div>
+                        </div>
+                        <div class="resize-handle"></div>
+                        <div class="variables-section">
+                            <h6>Variables</h6>
+                            <div class="variables-list">
+                                <div class="empty-state">No variables available. Start debugging to see variables.</div>
                             </div>
                         </div>
                     </div>
@@ -1221,6 +1443,9 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 tabContent.appendChild(outputContent);
                 tabContent.appendChild(variablesContent);
                 outputContainer.appendChild(tabContent);
+                
+                // Setup resize functionality for variables panel
+                setupResizeHandlers(configName);
                 
                 // If this is the first tab, make it active and hide the empty state
                 if (tabs.size === 1) {
@@ -1410,30 +1635,43 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             
             // In a real implementation, you would fetch actual debug data here
             // For now, we'll show some example data
-            const variablesList = variablesContent.querySelector('.variables-list');
             const stackList = variablesContent.querySelector('.stack-list');
+            const variablesList = variablesContent.querySelector('.variables-list');
+            
+            if (stackList) {
+                stackList.innerHTML = \`
+                    <div class="stack-item">📍 main.main() - main.go:25</div>
+                    <div class="stack-item">🔄 main.processData() - main.go:15</div>
+                    <div class="stack-item">🔄 main.validateInput() - main.go:8</div>
+                    <div class="stack-item">⚙️ runtime.main() - proc.go:250</div>
+                    <div class="stack-item">⚙️ runtime.goexit() - asm_amd64.s:1571</div>
+                \`;
+            }
             
             if (variablesList) {
                 variablesList.innerHTML = \`
                     <div class="variable-item">
-                        <span class="variable-name">example_var</span>
-                        <span class="variable-value">"hello world"</span>
+                        <span class="variable-name">msg</span>
+                        <span class="variable-value">"Hello, World!"</span>
                         <span class="variable-type">string</span>
                     </div>
                     <div class="variable-item">
-                        <span class="variable-name">counter</span>
+                        <span class="variable-name">count</span>
                         <span class="variable-value">42</span>
                         <span class="variable-type">int</span>
                     </div>
+                    <div class="variable-item">
+                        <span class="variable-name">isDebug</span>
+                        <span class="variable-value">true</span>
+                        <span class="variable-type">bool</span>
+                    </div>
+                    <div class="variable-item">
+                        <span class="variable-name">users</span>
+                        <span class="variable-value">[]User{...}</span>
+                        <span class="variable-type">[]User</span>
+                    </div>
                 \`;
-            }
-            
-            if (stackList) {
-                stackList.innerHTML = \`
-                    <div class="stack-item">main.main() at main.go:10</div>
-                    <div class="stack-item">runtime.main() at proc.go:250</div>
-                \`;
-            }
+        }
         }
         
         function updateVariablesData(configName, variables, callStack) {
@@ -1443,10 +1681,20 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             const variablesContent = tabContent.querySelector('.variables-content');
             if (!variablesContent) return;
             
-            const variablesList = variablesContent.querySelector('.variables-list');
             const stackList = variablesContent.querySelector('.stack-list');
+            const variablesList = variablesContent.querySelector('.variables-list');
             
-            // Update variables
+            // Update call stack (左侧)
+            if (stackList && callStack && callStack.length > 0) {
+                stackList.innerHTML = callStack.map((frame, index) => {
+                    const icon = index === 0 ? '📍' : '🔄'; // 当前帧用📍，其他用🔄
+                    return \`<div class="stack-item">\${icon} \${frame.name} - \${frame.source}:\${frame.line}</div>\`;
+                }).join('');
+            } else if (stackList) {
+                stackList.innerHTML = '<div class="empty-state">No call stack available.</div>';
+            }
+            
+            // Update variables (右侧)
             if (variablesList && variables && variables.length > 0) {
                 variablesList.innerHTML = variables.map(variable => \`
                     <div class="variable-item">
@@ -1458,18 +1706,10 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             } else if (variablesList) {
                 variablesList.innerHTML = '<div class="empty-state">No variables available.</div>';
             }
-            
-            // Update call stack
-            if (stackList && callStack && callStack.length > 0) {
-                stackList.innerHTML = callStack.map(frame => \`
-                    <div class="stack-item">\${frame.name} at \${frame.source}:\${frame.line}</div>
-                \`).join('');
-            } else if (stackList) {
-                stackList.innerHTML = '<div class="empty-state">No call stack available.</div>';
-            }
         }
         
         function updateToolbar(tabName, configState) {
+            const toolbar = document.querySelector(\`[data-content="\${tabName}"]\`);
             if (!toolbar) {
                 console.warn(\`Toolbar not found for tab: \${tabName}\`);
                 return;
@@ -1603,6 +1843,8 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'createTab':
                     createTab(message.tabName);
+                                        console.error("[JS] Creating tab:", message.tabName);
+
                     break;
                 case 'switchTab':
                     if (tabs.has(message.tabName)) {
