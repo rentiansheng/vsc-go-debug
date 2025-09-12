@@ -1148,11 +1148,7 @@ export async function terminateConfiguration(
 // This method is called when your extension is deactivated
 export function deactivate() { }
 
-function output_info(message: string, name: string) {
-	if (globalGoDebugOutputProvider) {
-		globalGoDebugOutputProvider.addOutput(message, name);
-	}
-}
+ 
 
 // Helper function to execute compile-first then dlv remote debug workflow
 async function executeCompileAndDlvDebug(
@@ -1260,7 +1256,7 @@ async function executeCompileAndDlvDebug(
 			if (exists === false) {
 				DebugLogger.error(`❌ 'dlv not found. Please install delve: go install github.com/go-delve/delve/cmd/dlv@latest'`, outputChannel);
 
-				output_info(
+				logToDebugOutput(
 					`❌ 'dlv not found. Please install delve: go install github.com/go-delve/delve/cmd/dlv@latest'`,
 					safeOriginalConfig.name
 				);
@@ -1268,7 +1264,7 @@ async function executeCompileAndDlvDebug(
 				return;
 			}
 		} catch (error) {
-			output_info(
+			logToDebugOutput(
 				`❌ Error checking dlv: ${error}`,
 				safeOriginalConfig.name
 			);
@@ -1287,7 +1283,7 @@ async function executeCompileAndDlvDebug(
 
 		let isReady = true;
 		delveClient.on("error", (err) => {
-			output_info(`❌ Delve error: ${err}`, safeOriginalConfig.name);
+			logToDebugOutput(`❌ Delve error: ${err}`, safeOriginalConfig.name);
 			stateManager.setConfigStopped(safeOriginalConfig.name);
 			isReady = false;
 			return;
@@ -1297,7 +1293,7 @@ async function executeCompileAndDlvDebug(
 		} catch (error) {
 			const errorMsg = `Failed to start Delve: ${error}`;
 			outputChannel.appendLine(`❌ ${errorMsg}`);
-			output_info(`❌ ${errorMsg}`, safeOriginalConfig.name);
+			logToDebugOutput(`❌ ${errorMsg}`, safeOriginalConfig.name);
 			throw error;
 		}
 
