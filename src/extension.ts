@@ -83,9 +83,11 @@ class ConfigurationStateManager {
 	// 清理所有已退出的进程，防止状态假阳性
 	private cleanupExitedConfigs() {
 		for (const [name, config] of this.runningConfigs.entries()) {
-			if (!config.process || config.process.killed || config.process.exitCode !== null) {
-				if (config.debugSession) {
-					vscode.debug.stopDebugging(config.debugSession);
+			if (config.startTime  < Date.now() - 1000) { // 仅清理启动超过1秒的配置，防止误杀刚启动的配置
+				if (!config.process || config.process.killed || config.process.exitCode !== null) {
+					if (config.debugSession) {
+						vscode.debug.stopDebugging(config.debugSession);
+					}
 				}
 			}
 
@@ -171,8 +173,7 @@ class ConfigurationStateManager {
 		this.cleanupExitedConfigs();
 		DebugLogger.log(`Setting configuration '${configName}' as running in ${config.mode} mode`);
 
-		// Ensure only one instance per configuration
-		this.stopConfig(configName);
+	 
 
 		this.runningConfigs.set(configName, config);
 
@@ -207,6 +208,36 @@ class ConfigurationStateManager {
 			globalGoDebugOutputProvider.addOutput(`🚀 Configuration started: ${configName} (${config.mode})`, configName);
 		}
 	}
+	
+	private resetConfigState(configName: string): void {
+		const config = this.runningConfigs.get(configName);
+		if (!config) {
+			return ;
+		}
+		if (config.mode === 'debug' && config.debugSession) {
+			DebugLogger.log(`Stopping debug session for '${configName}'`);
+			// Stop debug session
+			vscode.debug.stopDebugging(config.debugSession);
+		}
+		try {
+			// Kill the process
+			if (config.process && !config.process.killed) {
+				DebugLogger.log(`Sending SIGTERM to process ${config.process.pid} for '${configName}'`);
+				config.process.kill('SIGTERM');
+
+				// If it doesn't respond to SIGTERM in 2 seconds, use SIGKILL
+				setTimeout(() => {
+					if (!config.process.killed && config.process.exitCode === null) {
+						DebugLogger.log(`Sending SIGKILL to process ${config.process.pid} for '${configName}'`);
+						config.process.kill('SIGKILL');
+					}
+				}, 2000);
+			}
+		} catch (error) {
+			DebugLogger.error(`Failed to close Delve clients for ${configName}: ${error}`);
+		}
+	}
+
 
 	setConfigStopped(configName: string): void {
 		DebugLogger.log(`Setting configuration '${configName}' as stopped`);
@@ -221,29 +252,8 @@ class ConfigurationStateManager {
 					DebugLogger.error(`Failed to clean up binary ${config.binaryPath}: ${error}`);
 				}
 			}
+			this.resetConfigState(configName);
 
-			if (config.mode === 'debug' && config.debugSession) {
-				DebugLogger.log(`Stopping debug session for '${configName}'`);
-				// Stop debug session
-				vscode.debug.stopDebugging(config.debugSession);
-			}
-			try {
-				// Kill the process
-				if (!config.process.killed) {
-					DebugLogger.log(`Sending SIGTERM to process ${config.process.pid} for '${configName}'`);
-					config.process.kill('SIGTERM');
-
-					// If it doesn't respond to SIGTERM in 2 seconds, use SIGKILL
-					setTimeout(() => {
-						if (!config.process.killed && config.process.exitCode === null) {
-							DebugLogger.log(`Sending SIGKILL to process ${config.process.pid} for '${configName}'`);
-							config.process.kill('SIGKILL');
-						}
-					}, 2000);
-				}
-			} catch (error) {
-				DebugLogger.error(`Failed to close Delve clients for ${configName}: ${error}`);
-			}
 
 
 			//this.runningConfigs.delete(configName);
@@ -1128,7 +1138,7 @@ async function restartConfiguration(
 		setTimeout(async () => {
 			// Refresh the tree to update icons
 			debugConfigProvider.refresh();
-			
+
 			// Restart with the same mode
 			await runDebugConfiguration(item, mode);
 		}, 1500);
