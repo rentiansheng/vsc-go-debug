@@ -975,6 +975,7 @@ Recent debugging sessions and configuration details are logged to the output cha
 				if (!session.configuration) {
 					return;
 				}
+				session
 				// Update the running configuration with the debug session
 				const configName = session.configuration?.name;
 				if (configName) {
@@ -1050,7 +1051,7 @@ Recent debugging sessions and configuration details are logged to the output cha
 
 	context.subscriptions.push(
 		vscode.debug.onDidChangeActiveDebugSession((session) => {
-			if (session?.type === 'go-debug-pro') {
+			if (session?.type === 'go-debug-pro' || session?.type === 'go') {
 				watchProvider.onSessionChanged(session);
 			}
 		})
@@ -1064,6 +1065,8 @@ Recent debugging sessions and configuration details are logged to the output cha
 			}
 		})
 	);
+
+
 
 	// Initialize configurations for the debug output panel
 	setTimeout(() => {

@@ -201,8 +201,8 @@ export class DelveClient extends EventEmitter {
         "--check-go-version=false",
         "--accept-multiclient=true",
         "--log",
-        "--log-output=debugger,dap",
-        "--log-dest=2"  // 将日志输出到 stderr，便于调试
+        "--log-output=dap",
+        //"--log-dest=2"  // 将日志输出到 stderr，便于调试
       ];
 
       this.binaryArgs = args || [];
@@ -231,6 +231,48 @@ export class DelveClient extends EventEmitter {
       this.proc.stdout?.on("data", d => {
         const output = d.toString();
         console.log("dlv stdout:", output);
+        for (const line of output.split('\n')) {
+          if (line.includes('API server listening at:') || 
+              line.includes('listening at:') ||
+              line.includes('DAP server listening at:')) {
+            this.isReady = true;
+            console.log("Delve is ready!");
+            this.emit('ready');
+          }  else if (line.includes('layer=dap [-> to client]')) {
+
+                const jsonPart = line.substring(line.indexOf('{'));
+                try {
+                  const msg = JSON.parse(jsonPart);
+                  // {"seq":0,"type":"response","request_seq":11,"success":true,"command":"stackTrace","body":{"stackFrames":[{"id":1001,"name":"runtime.main","source":{"name":"proc.go","path":"/usr/local/go/src/runtime/proc.go"},"line":250,"column":0,"instructionPointerReference":"0x102718b4c","presentationHint":"subtle"},{"id":1002,"name":"runtime.goexit","source":{"name":"asm_arm64.s","path":"/usr/local/go/src/runtime/asm_arm64.s"},"line":1172,"column":0,"instructionPointerReference":"0x102743414","presentationHint":"subtle"}],"totalFrames":3}}
+                  // {"seq":0,"type":"response","request_seq":17,"success":true,"command":"variables","body":{"variables":[]}}
+                  // {"seq":0,"type":"event","event":"stopped","body":{"reason":"breakpoint","threadId":1,"allThreadsStopped":true,"hitBreakpointIds":[1]}}
+                  // {"seq":0,"type":"response","request_seq":13,"success":true,"command":"next"}
+                  // {"seq":0,"type":"event","event":"stopped","body":{"reason":"step","threadId":1,"allThreadsStopped":true}}
+                  if (msg && msg.type === 'event') {
+                    switch (msg.event) {
+                      case 'stopped':
+                        break;
+                    }
+                  } else if (msg && msg.type === 'response') {
+                      // 处理 stackTrace 响应
+                      switch (msg.command) {
+                        case 'stackTrace':
+                          // 刷新调用堆栈
+                          
+                          break;
+                        case 'variables':
+                          // 刷新变量
+                          break;
+                      }
+                    
+                  }
+                } catch (err) {
+                  console.error("Failed to parse DAP JSON from stdout:", err);
+                }
+              
+           
+          }
+        }
         
         // 检查多种可能的就绪信号
         if(!this.isReady && (
@@ -260,18 +302,24 @@ export class DelveClient extends EventEmitter {
           this.emit('ready');
         }
       
-        this.emit('stderr', output);
-        
+        var emitMsg = '';
+
         // 检查常见错误
         if (output.includes('permission denied')) {
-          console.error("Permission denied - check if binary is executable");
+          emitMsg = "Permission denied - check if binary is executable";
+        } else if (output.includes('no such file')) {
+          emitMsg = "Binary file not found";
+        } else  if (output.includes('address already in use')) {
+          emitMsg = "Port already in use";
+        } else {
+          emitMsg = output;
         }
-        if (output.includes('no such file')) {
-          console.error("Binary file not found");
+
+        if (emitMsg) {
+          this.emit('stderr', emitMsg);
         }
-        if (output.includes('address already in use')) {
-          console.error("Port already in use");
-        }
+        console.log("Emitted stderr message:", emitMsg);
+        console.log("Full stderr output:", output); 
       });
 
       this.proc.on('exit', (code, signal) => {
