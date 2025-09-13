@@ -3,6 +3,7 @@ import * as net from "net";
 import * as fs from 'fs';
 import { EventEmitter } from 'events';
 import * as vscode  from  "vscode";
+import { DAPProtocol } from './struct';
 
 let nextId = 1;
 
@@ -200,8 +201,8 @@ export class DelveClient extends EventEmitter {
         `--listen=${this.address()}`,
         "--check-go-version=false",
         "--accept-multiclient=true",
-        "--log",
-        "--log-output=dap",
+        //"--log",
+        //"--log-output=dap",
         //"--log-dest=2"  // 将日志输出到 stderr，便于调试
       ];
 
@@ -242,30 +243,38 @@ export class DelveClient extends EventEmitter {
 
                 const jsonPart = line.substring(line.indexOf('{'));
                 try {
-                  const msg = JSON.parse(jsonPart);
+                  const msg: DAPProtocol = JSON.parse(jsonPart);
+                  if(!msg) {
+                    console.warn("Received non-JSON DAP message:", line);
+                    continue;
+                  }
                   // {"seq":0,"type":"response","request_seq":11,"success":true,"command":"stackTrace","body":{"stackFrames":[{"id":1001,"name":"runtime.main","source":{"name":"proc.go","path":"/usr/local/go/src/runtime/proc.go"},"line":250,"column":0,"instructionPointerReference":"0x102718b4c","presentationHint":"subtle"},{"id":1002,"name":"runtime.goexit","source":{"name":"asm_arm64.s","path":"/usr/local/go/src/runtime/asm_arm64.s"},"line":1172,"column":0,"instructionPointerReference":"0x102743414","presentationHint":"subtle"}],"totalFrames":3}}
                   // {"seq":0,"type":"response","request_seq":17,"success":true,"command":"variables","body":{"variables":[]}}
                   // {"seq":0,"type":"event","event":"stopped","body":{"reason":"breakpoint","threadId":1,"allThreadsStopped":true,"hitBreakpointIds":[1]}}
                   // {"seq":0,"type":"response","request_seq":13,"success":true,"command":"next"}
                   // {"seq":0,"type":"event","event":"stopped","body":{"reason":"step","threadId":1,"allThreadsStopped":true}}
-                  if (msg && msg.type === 'event') {
-                    switch (msg.event) {
-                      case 'stopped':
-                        break;
-                    }
-                  } else if (msg && msg.type === 'response') {
-                      // 处理 stackTrace 响应
-                      switch (msg.command) {
-                        case 'stackTrace':
-                          // 刷新调用堆栈
-                          
-                          break;
-                        case 'variables':
-                          // 刷新变量
+                  
+                  switch (msg.type) {
+                    case "event":
+                      switch (msg.event) {
+                        case "stopped":
                           break;
                       }
-                    
+                      break;
+                    case "response":
+
+                      switch (msg.command) {
+                        case "stackTrace":
+                          this.emit("stackTrace", msg.body);
+                          break;
+                        case "variables":
+                            this.emit("variables", msg.body);
+                            break;
+                      }
+
+                      break;
                   }
+ 
                 } catch (err) {
                   console.error("Failed to parse DAP JSON from stdout:", err);
                 }

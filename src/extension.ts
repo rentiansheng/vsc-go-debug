@@ -975,7 +975,7 @@ Recent debugging sessions and configuration details are logged to the output cha
 				if (!session.configuration) {
 					return;
 				}
-				session
+				
 				// Update the running configuration with the debug session
 				const configName = session.configuration?.name;
 				if (configName) {
@@ -1276,6 +1276,16 @@ async function executeCompileAndDlvDebug(
 			outputChannel.appendLine(`✅ Delve is ready and listening`);
 			if (globalGoDebugOutputProvider) {
 				globalGoDebugOutputProvider.addOutput(`✅ Delve is ready and listening`, safeOriginalConfig.name);
+			}
+		});
+		delveClient.on("stackTrace", (trace) => {
+			if (globalGoDebugOutputProvider) {
+				globalGoDebugOutputProvider.updateStack(trace, safeOriginalConfig.name);
+			}
+		});
+		delveClient.on("variables", (vars) => {
+			if (globalGoDebugOutputProvider) {
+				globalGoDebugOutputProvider.updateVariables(vars, safeOriginalConfig.name);
 			}
 		});
 

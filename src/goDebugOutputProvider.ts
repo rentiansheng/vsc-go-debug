@@ -3,6 +3,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { GlobalStateManager, ConfigState, StateChangeEvent } from './globalStateManager';
 import { runDebugConfiguration } from './extension';
+import * as struct from './struct';
+import { StackFrame } from 'vscode-debugadapter';
 
 export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'goDebugOutput';
@@ -312,6 +314,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         this._updateWebview(tabName, logEntry);
     }
 
+ 
     /**
      * 处理 Delve 调试器的特定消息
      */
@@ -729,6 +732,14 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    public updateVariables(tabName: string, variables: struct.DAPVariableResponse) {
+        this._sendVariablesMessage(tabName, variables);
+    }
+
+    public updateStack(tabName: string, stack: struct.DAPStackTraceResponse) {
+        this._sendStackMessage(tabName, stack);
+    }
+
     public refreshConfigurations() {
         this.loadConfigurations();
     }
@@ -757,6 +768,26 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             this._view.webview.postMessage({
                 command: 'clearTab',
                 tabName: tabName
+            });
+        }
+    }
+
+    private _sendStackMessage(tabName: string, stack: struct.DAPStackTraceResponse) {
+        if (this._view) {
+            this._view.webview.postMessage({
+                command: 'updateStack',
+                tabName: tabName,
+                stack: stack
+            });
+        }
+    }
+
+    private _sendVariablesMessage(tabName: string, variables: struct.DAPVariableResponse) {
+        if (this._view) {
+            this._view.webview.postMessage({
+                command: 'updateVariables',
+                tabName: tabName,
+                variables: variables
             });
         }
     }
@@ -1238,6 +1269,42 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         .output-content .log-line:last-child {
             margin-bottom: 10px; /* 最后一行底部留白 */
         }
+
+        .output-content.stack-list { list-style: none; padding: 0; margin: 0; }
+        .output-content .stack-item {
+          padding: 10px 14px;
+          margin-bottom: 8px;
+          border-radius: 7px;
+          background: #fff;
+          box-shadow: 0 1px 4px #0002;
+          display: flex;
+          flex-direction: column;
+          transition: box-shadow 0.2s, background 0.2s;
+          cursor: pointer;
+        }
+        .output-content .stack-item:hover {
+          box-shadow: 0 2px 8px #0003;
+          background: #e7f3ff;
+        }
+        .output-content .stack-item.selected {
+          border-left: 4px solid #4c8bf4;
+          background: #dbeafe;
+        }
+        .output-content .stack-item.subtle {
+          opacity: 0.7;
+          font-style: italic;
+          background: #f0f0f0;
+        }
+        .output-content .frame-header { font-weight: bold; color: #2457a3; }
+        .output-content .frame-location {
+          color: #888;
+          font-size: 13px;
+          margin-top: 3px;
+        }
+        .output-content .frame-addr {
+          color: #aaa; font-size: 12px;
+          margin-top: 3px;
+        }
     </style>
 </head>
 <body>
@@ -1673,6 +1740,64 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 \`;
         }
         }
+
+
+        function updateStack(configName, callStack) {
+            const tabContent = document.querySelector(\`[data-content="\${configName}"]\`);
+            if (!tabContent) return;
+            
+ 
+            const stackList = variablesContent.querySelector('.stack-list');
+            if (!stackList) { console.warn('Stack list element not found'); return; }
+
+            stack.forEach((frame, idx) => {
+                const li = document.createElement('li');
+                li.className = 'stack-item' + (frame.presentationHint === 'subtle' ? ' subtle' : '');
+                li.innerHTML = \`
+                    <div class="frame-header">\${frame.name}</div>
+                    <div class="frame-location" title="\${frame.source.path}">
+                    <span style="color:#1976d2;text-decoration:underline;cursor:pointer;" class="source-link">\${frame.source.name}</span> :\${frame.line}
+                    </div>
+                    <div class="frame-addr">IP: \${frame.instructionPointerReference}</div>
+                \`;
+                // 点击跳转源码
+                li.querySelector('.source-link').onclick = (e) => {
+                    e.stopPropagation();
+                    window.vscode.postMessage({
+                    command: 'gotoSource',
+                    path: frame.source.path,
+                    line: frame.line,
+                    column: frame.column
+                    });
+                };
+                // 选中高亮
+                li.onclick = () => {
+                    tabContent.querySelectorAll('.stack-item').forEach(el => el.classList.remove('selected'));
+                    li.classList.add('selected');
+                };
+                stackList.appendChild(li);
+            });
+
+        }
+
+        function updateVariables(tabName, variables) {
+            const tabContent = document.querySelector(\`[data-content="\${tabName}"]\`);
+            const variablesContent = tabContent.querySelector('.variables-content');
+            if (!variablesContent) return;
+            if (!tabContent) return;
+             // Update variables (右侧)
+            if (variablesList && variables && variables.length > 0) {
+                variablesList.innerHTML = variables.map(variable => \`
+                    <div class="variable-item">
+                        <span class="variable-name">\${variable.name}</span>
+                        <span class="variable-value">\${variable.value}</span>
+                        <span class="variable-type">\${variable.type}</span>
+                    </div>
+                \`).join('');
+            } else if (variablesList) {
+                variablesList.innerHTML = '<div class="empty-state">No variables available.</div>';
+            }
+        }
         
         function updateVariablesData(configName, variables, callStack) {
             const tabContent = document.querySelector(\`[data-content="\${configName}"]\`);
@@ -1843,7 +1968,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'createTab':
                     createTab(message.tabName);
-                                        console.error("[JS] Creating tab:", message.tabName);
+                    console.error("[JS] Creating tab:", message.tabName);
 
                     break;
                 case 'switchTab':
@@ -1874,11 +1999,20 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 case 'updateVariables':
                     // Update variables view with debug data
                     if (message.tabName && message.variables) {
-                        updateVariablesData(message.tabName, message.variables, message.callStack);
+                        updateVariables(message.tabName, message.variables);
                     }
                     break;
+                case 'updateStack':
+                    if (message.tabName && message.callStack) {
+                        updateStack(message.tabName, message.callStack);
+                    }
+                    break;
+                
             }
         });
+
+        window.vscode = acquireVsCodeApi();
+
     </script>
 </body>
 </html>`;
