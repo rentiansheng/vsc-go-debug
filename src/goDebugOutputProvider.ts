@@ -816,14 +816,14 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         const activeSessions = vscode.debug.activeDebugSession;
         if (activeSessions && activeSessions.type === 'go-debug-pro') {
             console.log('[Go Debug Output] Syncing with active debug session:', activeSessions.name);
-            this.setSessionInfo(activeSessions.name, 'debug', 'running', activeSessions);
+            this.setSessionInfo(activeSessions.configuration.name, 'debug', 'running', activeSessions);
         }
         
         // 检查所有调试会话
         for (const session of vscode.debug.activeDebugSession ? [vscode.debug.activeDebugSession] : []) {
             if (session.type === 'go-debug-pro') {
                 console.log('[Go Debug Output] Found active go-debug-pro session:', session.name);
-                this.setSessionInfo(session.name, 'debug', 'running', session);
+                this.setSessionInfo(session.configuration.name, 'debug', 'running', session);
             }
         }
     }

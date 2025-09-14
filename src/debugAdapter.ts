@@ -1,449 +1,512 @@
-import {
-	DebugSession, 
-	InitializedEvent, 
-	TerminatedEvent, 
-	StoppedEvent, 
-	BreakpointEvent, 
-	OutputEvent,
-	Thread, 
-	StackFrame, 
-	Scope, 
-	Variable, 
-	Breakpoint,
-	Source
-} from '@vscode/debugadapter';
+
 import { DebugProtocol } from '@vscode/debugprotocol';
 import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
+import * as vscode from 'vscode';
+import * as vsAdapter from '@vscode/debugadapter';
+import * as net from 'net';
+import { DelveClient } from './delveClient';
+import * as fs from 'fs';
+
 
 interface LaunchRequestArguments extends DebugProtocol.LaunchRequestArguments {
 	program: string;
-	args: string[];
-	cwd: string;
-	env: { [key: string]: string };
+	name?: string;
+	args?: string[];
+	cwd?: string;
+	env?: { [key: string]: string };
 	showLog?: boolean;
 	logOutput?: string;
+	stopOnEntry?: boolean;
+	dlvPort?: number;
 }
 
 interface AttachRequestArguments extends DebugProtocol.AttachRequestArguments {
 	processId: string;
+	host?: string;
+	port?: number;
 	mode: 'local' | 'remote';
 }
 
-export class GoDebugAdapter extends DebugSession {
-	
-	private static readonly THREAD_ID = 1;
-	private _runtime: GoRuntime;
-	private _variableHandles = new Map<number, Variable[]>();
-	private _nextVariableHandle = 1000;
+export class DebugSession extends vsAdapter.DebugSession implements vscode.DebugSession {
+	private dlvProcess: ChildProcess | null = null;
+	private dlvPath: string = 'dlv';
+	private dlvSocket: net.Socket | null = null;
+	private buffer: string = '';
+	private dlvPort: number = 2345;
+	private host: string = '127.0.0.1';
+	private pendingRequests = new Map<number, any>();
+	private isConnected: boolean = false;
+	private program: string = '';
+	private args: string[] = [];
+	private keepAliveInterval: NodeJS.Timeout | null = null;
+
+	private debugSession: vscode.DebugSession | null = null;
+
+	private address(): string {
+		return `${this.host}:${this.dlvPort}`;
+	}
 
 	public constructor() {
 		super();
-		this._runtime = new GoRuntime();
+		console.log('DebugSession constructor called');
+		this.setDebuggerLinesStartAt1(false);
+		this.setDebuggerColumnsStartAt1(false);
+	}
+
+
+
+
+	public async setSessionInfo(session: vscode.DebugSession): Promise<void> {
+	 
+		try {
+			this.debugSession = session;
+
+			console.log(`🔗 DelveClient connection status: ${this.isConnected ? 'Connected' : 'Not connected'}`);
+			console.log(`📍 DelveClient address: ${this.host}:${this.dlvPort}`);
+
+		} catch (error) {
+ 			this.dlvPath = 'dlv';
+		}
 		
-		// Setup event handlers
-		this._runtime.on('stopOnEntry', () => {
-			this.sendEvent(new StoppedEvent('entry', GoDebugAdapter.THREAD_ID));
-		});
-		
-		this._runtime.on('stopOnStep', () => {
-			this.sendEvent(new StoppedEvent('step', GoDebugAdapter.THREAD_ID));
-		});
-		
-		this._runtime.on('stopOnBreakpoint', () => {
-			this.sendEvent(new StoppedEvent('breakpoint', GoDebugAdapter.THREAD_ID));
-		});
-		
-		this._runtime.on('stopOnException', (exception: any) => {
-			this.sendEvent(new StoppedEvent('exception', GoDebugAdapter.THREAD_ID, exception));
-		});
-		
-		this._runtime.on('breakpointValidated', (bp: any) => {
-			this.sendEvent(new BreakpointEvent('changed', bp as DebugProtocol.Breakpoint));
-		});
-		
-		this._runtime.on('output', (text: any, filePath: any, line: any, column: any) => {
-			const e: DebugProtocol.OutputEvent = new OutputEvent(`${text}\n`);
-			if (filePath) {
-				e.body.source = this.createSource(filePath);
-				e.body.line = this.convertDebuggerLineToClient(line);
-				e.body.column = this.convertDebuggerColumnToClient(column);
+
+		console.log(`DebugSession info: name=${session.configuration.name}, type=${session.configuration.type}`);
+	}
+
+	public getDlvInfo(): [ChildProcess | null, net.Socket | null] {
+		return [this.dlvProcess, this.dlvSocket];
+	}
+
+	 
+	protected async initializeRequest(response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments): Promise<void> {
+		console.log('initializeRequest called with args:', args);
+		if(!this.isConnected) {
+			const delveClient = new DelveClient();
+			console.log('🚀 Starting DelveClient...');
+			const config = this.debugSession?.configuration;
+			if (config) {
+				await delveClient.start(config.program, config.name, config.args, config.cwd, config.env);
+				console.log('✅ DelveClient started successfully');
+				// 等待500ms以确保Delve完全启动
+				await new Promise(resolve => setTimeout(resolve, 500));
+
+				this.dlvPath = delveClient.getDlvPath();
+				this.dlvPort = delveClient.getPort();
+				this.host = delveClient.getHost();
+				
+				this.dlvProcess = delveClient.getProcess();
+				this.dlvSocket = delveClient.getSocket();
+				this.isConnected = this.dlvSocket !== null;
 			}
-			this.sendEvent(e);
-		});
-		
-		this._runtime.on('end', () => {
-			this.sendEvent(new TerminatedEvent());
-		});
-	}
 
-	protected initializeRequest(response: DebugProtocol.InitializeResponse, args: DebugProtocol.InitializeRequestArguments): void {
+		}
 		
-		// Build and return the capabilities of this debug adapter
-		response.body = response.body || {};
-		
-		// The adapter implements the configurationDone request
-		response.body.supportsConfigurationDoneRequest = true;
-		
-		// Make VS Code use 'evaluate' when hovering over source
-		response.body.supportsEvaluateForHovers = true;
-		
-		// Make VS Code show a 'step back' button
-		response.body.supportsStepBack = false;
-		
-		// Make VS Code support data breakpoints
-		response.body.supportsDataBreakpoints = false;
-		
-		// Make VS Code support completion in REPL
-		response.body.supportsCompletionsRequest = true;
-		response.body.completionTriggerCharacters = ['.', '['];
-		
-		// Make VS Code send cancel request
-		response.body.supportsCancelRequest = true;
-		
-		// Make VS Code send the breakpointLocations request
-		response.body.supportsBreakpointLocationsRequest = true;
-		
-		// Make VS Code provide "Step in Target" functionality
-		response.body.supportsStepInTargetsRequest = true;
-		
-		// Make VS Code send exception info request
-		response.body.supportsExceptionInfoRequest = true;
-		
-		// Make VS Code send function breakpoints
-		response.body.supportsFunctionBreakpoints = true;
-		
-		// Support conditional breakpoints
+		response.body = response.body ?? {};
 		response.body.supportsConditionalBreakpoints = true;
-		
-		// Support hit count breakpoints
-		response.body.supportsHitConditionalBreakpoints = true;
-		
-		// Support logpoints
-		response.body.supportsLogPoints = true;
-		
-		// Support variable type
-		// response.body.supportsVariableType = true;
-		
-		// Support variable paging
-		// response.body.supportsVariablePaging = true;
-		
-		// Support restart frame
-		response.body.supportsRestartFrame = false;
-		
-		// Support goto targets
-		response.body.supportsGotoTargetsRequest = true;
-		
-		this.sendResponse(response);
-		
-		// Since this debug adapter can accept configuration requests like 'setBreakpoint' at any time,
-		// we request them early by sending an 'initializeRequest' to the frontend.
-		// The frontend will end the configuration sequence by calling 'configurationDone' request.
-		this.sendEvent(new InitializedEvent());
-	}
+		response.body.supportsConfigurationDoneRequest = true;
+		response.body.supportsSetVariable = true;
+		// 将初始化请求转发给 dlv
+		if (this.isConnected) {
+			this.forwardToDlv({
+				seq: 1,
+				type: 'request',
+				command: 'initialize',
+				arguments: args
+			});
+			response.success = true;
+			this.sendResponse(response);
+			this.sendEvent(new vsAdapter.InitializedEvent());
+		} else {
+			// 如果还没连接，先返回基本能力
+			response.body = response.body || {};
 
-	protected configurationDoneRequest(response: DebugProtocol.ConfigurationDoneResponse, args: DebugProtocol.ConfigurationDoneArguments): void {
-		super.configurationDoneRequest(response, args);
-		
-		// Notify the runtime that configuration has finished
-		this._runtime.start();
+			response.body.supportsConfigurationDoneRequest = true;
+			response.body.supportsEvaluateForHovers = true;
+			response.body.supportsStepBack = false;
+			response.body.supportsDataBreakpoints = false;
+			response.body.supportsCompletionsRequest = true;
+			response.body.completionTriggerCharacters = ['.', '['];
+			response.body.supportsCancelRequest = true;
+			response.body.supportsBreakpointLocationsRequest = true;
+			response.body.supportsStepInTargetsRequest = true;
+			response.body.supportsExceptionInfoRequest = true;
+			response.body.supportsFunctionBreakpoints = true;
+			response.body.supportsConditionalBreakpoints = true;
+			response.body.supportsHitConditionalBreakpoints = true;
+			response.body.supportsLogPoints = true;
+			response.body.supportsRestartFrame = false;
+			response.body.supportsGotoTargetsRequest = true;
+
+			this.sendResponse(response);
+			this.sendEvent(new vsAdapter.InitializedEvent());
+		}
 	}
 
 	protected async launchRequest(response: DebugProtocol.LaunchResponse, args: LaunchRequestArguments) {
-		
-		// Start the program in the runtime
-		await this._runtime.start(args.program, false, !args.noDebug); // stopOnEntry not in new protocol
-		
-		this.sendResponse(response);
+		console.log('launchRequest called with args:', JSON.stringify(args, null, 2));
+
+		try {
+			this.program = args.program;
+			this.args = args.args || [];
+			
+			// 如果已经连接到 DelveClient，直接转发请求
+			if (this.isConnected && this.dlvSocket) {
+				console.log('Forwarding launch request to Delve DAP...');
+				this.forwardToDlv({
+					seq: 1,
+					type: 'request',
+					command: 'launch',
+					arguments: args
+				});
+			} else {
+				console.log('No DelveClient connection found, starting standalone mode...');
+				// 这里可以实现独立模式的逻辑
+			}
+			
+			response.success = true;
+			this.sendResponse(response);
+
+		} catch (error) {
+			console.error('Launch request failed:', error);
+			response.success = false;
+			response.message = `Failed to launch: ${error}`;
+			this.sendResponse(response);
+		}
 	}
 
-	protected async attachRequest(response: DebugProtocol.AttachResponse, args: AttachRequestArguments) {
-		
-		// Attach to the process
-		await this._runtime.attach(args.processId, args.mode);
-		
-		this.sendResponse(response);
+
+ 
+
+
+	private startKeepAlive() {
+		// 在 DAP 模式下，我们不发送心跳请求，因为 VS Code 会处理所有 DAP 通信
+		// 只是定期检查连接状态
+		this.keepAliveInterval = setInterval(() => {
+			if (this.dlvProcess && this.dlvProcess && !this.dlvProcess.killed && this.dlvProcess.exitCode === null) {
+				console.log("🟢 DAP connection and process are alive");
+			} else {
+				console.log("🔴 DAP connection or process issues detected");
+				// 如果进程已经退出，停止心跳
+				if (this.dlvProcess && (this.dlvProcess.killed || this.dlvProcess.exitCode !== null)) {
+					this.stopKeepAlive();
+				}
+			}
+		}, 30000);
+	}
+
+	private stopKeepAlive() {
+		if (this.keepAliveInterval) {
+			clearInterval(this.keepAliveInterval);
+			this.keepAliveInterval = null;
+		}
+	}
+
+
+	private isProcessRunning(processId: string): boolean {
+		try {
+			// 在 Unix 系统上，使用 kill -0 检查进程是否存在
+			process.kill(parseInt(processId), 0);
+			return true;
+		} catch (error) {
+			return false;
+		}
+	}
+
+	private setupDelveClientEventListeners(): void {
+
+
+		// 监听 DelveClient 的事件
+		this.on('ready', () => {
+			console.log('DelveClient is ready');
+		});
+
+		this.on('stdout', (data: string) => {
+			console.log('[DelveClient stdout]', data);
+		});
+
+		this.on('stderr', (data: string) => {
+			console.error('[DelveClient stderr]', data);
+		});
+
+		this.on('exit', (code: number, signal: string) => {
+			console.log(`DelveClient process exited with code ${code}, signal ${signal}`);
+			this.sendEvent(new vsAdapter.TerminatedEvent());
+		});
+
+		this.on('error', (error: Error) => {
+			console.error('DelveClient error:', error);
+		});
+
+		// 监听调试相关事件
+		this.on('stackTrace', (trace: any) => {
+			console.log('Stack trace received:', trace);
+			// 可以通过这里更新UI或发送事件到VS Code
+		});
+
+		this.on('variables', (vars: any) => {
+			console.log('Variables received:', vars);
+			// 可以通过这里更新变量视图
+		});
+	}
+
+	private async connectToDelveClientDap(): Promise<void> {
+		const host = this.host;
+		const port = this.dlvPort;
+		return new Promise((resolve, reject) => {
+			let retryCount = 0;
+			const maxRetries = 10;
+
+			const tryConnect = () => {
+				this.dlvSocket = net.connect(port, host);
+
+				this.dlvSocket.on('connect', () => {
+					console.log(`Connected to DelveClient DAP at ${host}:${port}`);
+					this.isConnected = true;
+					resolve();
+				});
+
+				this.dlvSocket.on('data', (data) => {
+					this.handleDlvData(data);
+					this.startKeepAlive();
+				});
+
+				this.dlvSocket.on('error', (err) => {
+					console.error('DelveClient DAP socket error:', err);
+					retryCount++;
+					if (retryCount < maxRetries) {
+						console.log(`Retrying connection (${retryCount}/${maxRetries})...`);
+						setTimeout(tryConnect, 500);
+					} else {
+						reject(new Error(`Failed to connect to DelveClient DAP after ${maxRetries} retries`));
+					}
+				});
+
+				this.dlvSocket.on('close', () => {
+					console.log('DelveClient DAP socket closed');
+					this.cleanup();
+					this.isConnected = false;
+				});
+			};
+
+			// 初次连接延迟一点，等待 DelveClient 完全启动
+			setTimeout(tryConnect, 1000);
+		});
+	}
+
+ 
+
+	private handleDlvData(data: Buffer): void {
+		this.buffer += data.toString();
+
+		let idx;
+		while ((idx = this.buffer.indexOf('\r\n')) !== -1) {
+			const msgStr = this.buffer.slice(0, idx);
+			this.buffer = this.buffer.slice(idx + 2);
+
+			if (msgStr.trim()) {
+				try {
+					const dapMsg = JSON.parse(msgStr);
+					this.handleDlvMessage(dapMsg);
+				} catch (e) {
+					console.error('Failed to parse dlv DAP message:', msgStr, e);
+				}
+			}
+		}
+	}
+
+	private handleDlvMessage(msg: any): void {
+		console.log('Received message from dlv DAP:', JSON.stringify(msg, null, 2));
+
+		if (msg.type === 'event') {
+			console.log(`Forwarding event '${msg.event}' to VS Code`);
+			// 转发事件到 VS Code
+			this.sendEvent(msg);
+		} else if (msg.type === 'response') {
+			console.log(`Forwarding response for command '${msg.command}' to VS Code`);
+			// 转发响应到 VS Code
+			this.sendResponse(msg);
+		} else {
+			console.log('Unknown message type from dlv:', msg.type);
+		}
+	}
+
+	private forwardToDlv(request: any): void {
+		if (this.dlvSocket && this.dlvSocket.writable) {
+			const body = JSON.stringify(request);
+			const contentLength = Buffer.byteLength(body, 'utf8');
+			const header = `Content-Length: ${contentLength}\r\n\r\n`;
+			const msgStr = header + body;
+			if (!this.dlvSocket.write(msgStr)) {
+				console.warn('dlv socket write returned false, data may be buffered');
+			}
+		} else {
+			console.error('dlv socket not available for forwarding request');
+		}
+	}
+
+	// 以下所有 DAP 请求都转发给 dlv
+	protected configurationDoneRequest(response: DebugProtocol.ConfigurationDoneResponse, args: DebugProtocol.ConfigurationDoneArguments): void {
+		this.forwardToDlv({
+			seq: response.request_seq,
+			type: 'request',
+			command: 'configurationDone',
+			arguments: args
+		});
 	}
 
 	protected setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments): void {
-		
-		const path = args.source.path as string;
-		const clientLines = args.lines || [];
-		
-		// Clear all breakpoints for this file
-		this._runtime.clearBreakpoints(path);
-		
-		// Set and verify breakpoint locations
-		const actualBreakpoints = clientLines.map(l => {
-			const { verified, line, id } = this._runtime.setBreakPoint(path, this.convertClientLineToDebugger(l));
-			const bp = <DebugProtocol.Breakpoint> new Breakpoint(verified, this.convertDebuggerLineToClient(line));
-			bp.id = id;
-			
-			// Handle conditional breakpoints
-			if (args.breakpoints) {
-				const sourceBreakpoint = args.breakpoints[clientLines.indexOf(l)];
-				if (sourceBreakpoint) {
-					// bp.condition = sourceBreakpoint.condition;
-					// bp.hitCondition = sourceBreakpoint.hitCondition;
-					// bp.logMessage = sourceBreakpoint.logMessage;
-				}
-			}
-			
-			return bp;
+		this.forwardToDlv({
+			seq: response.request_seq,
+			type: 'request',
+			command: 'setBreakpoints',
+			arguments: args
 		});
-		
-		// Send back the actual breakpoint positions
-		response.body = {
-			breakpoints: actualBreakpoints
-		};
-		this.sendResponse(response);
 	}
 
 	protected threadsRequest(response: DebugProtocol.ThreadsResponse): void {
-		
-		// Runtime supports now threads so just return a default thread
-		response.body = {
-			threads: [
-				new Thread(GoDebugAdapter.THREAD_ID, "main")
-			]
-		};
-		this.sendResponse(response);
+		this.forwardToDlv({
+			seq: response.request_seq,
+			type: 'request',
+			command: 'threads',
+			arguments: {}
+		});
 	}
 
 	protected stackTraceRequest(response: DebugProtocol.StackTraceResponse, args: DebugProtocol.StackTraceArguments): void {
-		
-		const startFrame = typeof args.startFrame === 'number' ? args.startFrame : 0;
-		const maxLevels = typeof args.levels === 'number' ? args.levels : 1000;
-		const endFrame = startFrame + maxLevels;
-		
-		const stk = this._runtime.stack(startFrame, endFrame);
-		
-		response.body = {
-			stackFrames: stk.frames.map(f => {
-				const sf = new StackFrame(f.index, f.name, this.createSource(f.file), this.convertDebuggerLineToClient(f.line));
-				if (typeof f.column === 'number') {
-					sf.column = this.convertDebuggerColumnToClient(f.column);
-				}
-				return sf;
-			}),
-			// 4 options for 'totalFrames':
-			//omit totalFrames property: 	// VS Code has to probe/guess. Should result in a max. of two requests
-			totalFrames: stk.count			// stk.count is the correct size, should result in a max. of two requests
-			//totalFrames: 1000000 			// not the correct size, should result in a max. of two requests
-			//totalFrames: endFrame + 20 	// dynamically increases the size with every requested chunk, results in paging
-		};
-		this.sendResponse(response);
+		this.forwardToDlv({
+			seq: response.request_seq,
+			type: 'request',
+			command: 'stackTrace',
+			arguments: args
+		});
 	}
 
 	protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments): void {
-		
-		response.body = {
-			scopes: [
-				new Scope("Local", this._nextVariableHandle++, false),
-				new Scope("Global", this._nextVariableHandle++, true)
-			]
-		};
-		this.sendResponse(response);
+		this.forwardToDlv({
+			seq: response.request_seq,
+			type: 'request',
+			command: 'scopes',
+			arguments: args
+		});
 	}
 
-	protected async variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments) {
-		
-		let variables: Variable[] = [];
-		
-		if (this._variableHandles.has(args.variablesReference)) {
-			variables = this._variableHandles.get(args.variablesReference)!;
-		} else {
-			// Get variables from runtime
-			const vars = await this._runtime.getVariables(args.variablesReference);
-			variables = vars.map(v => {
-				const variable = new Variable(v.name, v.value);
-				// if (v.type) {
-				// 	variable.type = v.type;
-				// }
-				if (v.variablesReference && v.variablesReference > 0) {
-					variable.variablesReference = v.variablesReference;
-				}
-				return variable;
-			});
-			this._variableHandles.set(args.variablesReference, variables);
-		}
-		
-		response.body = {
-			variables: variables
-		};
-		this.sendResponse(response);
+	protected variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments): void {
+		this.forwardToDlv({
+			seq: response.request_seq,
+			type: 'request',
+			command: 'variables',
+			arguments: args
+		});
 	}
 
 	protected continueRequest(response: DebugProtocol.ContinueResponse, args: DebugProtocol.ContinueArguments): void {
-		this._runtime.continue();
-		this.sendResponse(response);
+		this.forwardToDlv({
+			seq: response.request_seq,
+			type: 'request',
+			command: 'continue',
+			arguments: args
+		});
 	}
 
 	protected nextRequest(response: DebugProtocol.NextResponse, args: DebugProtocol.NextArguments): void {
-		this._runtime.step();
-		this.sendResponse(response);
+		this.forwardToDlv({
+			seq: response.request_seq,
+			type: 'request',
+			command: 'next',
+			arguments: args
+		});
 	}
 
 	protected stepInRequest(response: DebugProtocol.StepInResponse, args: DebugProtocol.StepInArguments): void {
-		this._runtime.stepIn();
-		this.sendResponse(response);
+		this.forwardToDlv({
+			seq: response.request_seq,
+			type: 'request',
+			command: 'stepIn',
+			arguments: args
+		});
 	}
 
 	protected stepOutRequest(response: DebugProtocol.StepOutResponse, args: DebugProtocol.StepOutArguments): void {
-		this._runtime.stepOut();
-		this.sendResponse(response);
+		this.forwardToDlv({
+			seq: response.request_seq,
+			type: 'request',
+			command: 'stepOut',
+			arguments: args
+		});
 	}
 
-	protected async evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments) {
-		
-		let reply: string | undefined = undefined;
-		
-		if (args.context === 'repl') {
-			// Handle REPL context
-			reply = await this._runtime.evaluate(args.expression);
-		} else if (args.context === 'hover') {
-			// Handle hover context
-			reply = await this._runtime.evaluate(args.expression);
-		} else if (args.context === 'watch') {
-			// Handle watch context
-			reply = await this._runtime.evaluate(args.expression);
-		} else {
-			reply = `evaluate(context: '${args.context}', '${args.expression}')`;
-		}
-		
-		response.body = {
-			result: reply ? reply : `null`,
-			variablesReference: 0
-		};
-		this.sendResponse(response);
+	protected evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): void {
+		this.forwardToDlv({
+			seq: response.request_seq,
+			type: 'request',
+			command: 'evaluate',
+			arguments: args
+		});
 	}
 
-	//---- helpers
+	protected disconnectRequest(response: DebugProtocol.DisconnectResponse, args: DebugProtocol.DisconnectArguments): void {
+		this.forwardToDlv({
+			seq: response.request_seq,
+			type: 'request',
+			command: 'disconnect',
+			arguments: args
+		});
 
-	private createSource(filePath: string): Source {
-		return new Source(path.basename(filePath), this.convertDebuggerPathToClient(filePath), undefined, undefined, 'go-debug-adapter-data');
+		// 清理资源
+		this.cleanup();
 	}
-}
 
-// Mock runtime for Go debugging
-class GoRuntime {
-	
-	private _events = new Map<string, Function[]>();
-	private _breakPoints = new Map<string, number[]>();
-	private _breakpointId = 1;
-	private _currentLine = 0;
-	private _process: ChildProcess | undefined;
-	
-	constructor() {
-		// Initialize
-	}
-	
-	public on(event: string, listener: Function) {
-		if (!this._events.has(event)) {
-			this._events.set(event, []);
+	private cleanup(): void {
+		// 清理 socket 连接
+		if (this.dlvSocket) {
+			this.dlvSocket.destroy();
+			this.dlvSocket = null;
 		}
-		this._events.get(event)!.push(listener);
-	}
-	
-	private emit(event: string, ...args: any[]) {
-		if (this._events.has(event)) {
-			this._events.get(event)!.forEach(listener => listener(...args));
+		if (this.program && fs.existsSync(this.program)) {
+			try {
+				fs.unlinkSync(this.program);
+				console.log(`Cleaned up binary: ${this.program}`);
+			} catch (error) {
+				console.error(`Failed to clean up binary ${this.program}: ${error}`);
+			}
 		}
+
+
+		// 清理直接启动的 dlv 进程
+		if (this.dlvProcess) {
+			this.dlvProcess.kill();
+			this.dlvProcess = null;
+		}
+
+		this.isConnected = false;
 	}
-	
-	public async start(program?: string, stopOnEntry?: boolean, noDebug?: boolean): Promise<void> {
-		
-		if (program) {
-			// Start Go program with delve debugger
-			this._process = spawn('dlv', ['debug', program, '--headless', '--listen=:2345', '--api-version=2'], {
-				cwd: path.dirname(program)
+
+	// 实现 vscode.DebugSession 接口的必需方法
+	readonly id: string = Math.random().toString(36);
+	readonly type: string = 'go-debug-pro';
+	readonly name: string = 'Go Debug Pro Session';
+	readonly workspaceFolder: vscode.WorkspaceFolder | undefined = undefined;
+	readonly configuration: vscode.DebugConfiguration = {
+		type: 'go-debug-pro',
+		name: 'Go Debug Pro Session',
+		request: 'launch'
+	};
+
+	customRequest(command: string, args?: any): Thenable<any> {
+		return new Promise((resolve, reject) => {
+			this.forwardToDlv({
+				seq: Date.now(),
+				type: 'request',
+				command: command,
+				arguments: args
 			});
-			
-			this._process.stdout?.on('data', (data) => {
-				this.emit('output', data.toString(), program, 1, 1);
-			});
-			
-			this._process.stderr?.on('data', (data) => {
-				this.emit('output', data.toString(), program, 1, 1);
-			});
-			
-			this._process.on('close', (code) => {
-				this.emit('end');
-			});
-		}
-		
-		if (stopOnEntry) {
-			this.emit('stopOnEntry');
-		} else {
-			this.emit('stopOnStep');
-		}
+			// 简化处理，实际应该跟踪请求ID
+			resolve({});
+		});
 	}
-	
-	public async attach(processId: string, mode: 'local' | 'remote'): Promise<void> {
-		// Implement attach logic
-		this.emit('stopOnEntry');
-	}
-	
-	public continue(): void {
-		// Continue execution
-		this.emit('stopOnStep');
-	}
-	
-	public step(): void {
-		this._currentLine++;
-		this.emit('stopOnStep');
-	}
-	
-	public stepIn(): void {
-		this._currentLine++;
-		this.emit('stopOnStep');
-	}
-	
-	public stepOut(): void {
-		this._currentLine++;
-		this.emit('stopOnStep');
-	}
-	
-	public setBreakPoint(path: string, line: number): { verified: boolean, line: number, id: number } {
-		const bp = { verified: true, line, id: this._breakpointId++ };
-		
-		if (!this._breakPoints.has(path)) {
-			this._breakPoints.set(path, []);
-		}
-		this._breakPoints.get(path)!.push(line);
-		
-		this.emit('breakpointValidated', bp);
-		return bp;
-	}
-	
-	public clearBreakpoints(path: string): void {
-		this._breakPoints.delete(path);
-	}
-	
-	public stack(startFrame: number, endFrame: number): { frames: any[], count: number } {
-		const frames = [];
-		for (let i = startFrame; i < Math.min(endFrame, 10); i++) {
-			frames.push({
-				index: i,
-				name: `frame_${i}`,
-				file: '/path/to/file.go',
-				line: i + 1
-			});
-		}
-		return { frames, count: 10 };
-	}
-	
-	public async getVariables(reference: number): Promise<any[]> {
-		// Mock variables
-		return [
-			{ name: 'x', value: '42', type: 'int' },
-			{ name: 'y', value: 'hello', type: 'string' },
-			{ name: 'arr', value: '[1, 2, 3]', type: '[]int', variablesReference: reference + 1 }
-		];
-	}
-	
-	public async evaluate(expression: string): Promise<string> {
-		// Mock evaluation
-		return `result of ${expression}`;
+
+	getDebugProtocolBreakpoint(breakpoint: vscode.Breakpoint): Thenable<vscode.DebugProtocolBreakpoint | undefined> {
+		// 简化实现
+		return Promise.resolve(undefined);
 	}
 }

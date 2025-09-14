@@ -5,11 +5,13 @@ import { EventEmitter } from 'events';
 import * as vscode  from  "vscode";
 import { DAPProtocol } from './struct';
 
+ 
+ 
+  
 let nextId = 1;
 
 export class DelveClient extends EventEmitter {
   private proc: ChildProcess | null = null;
-  private conn: net.Socket | null = null;
   private pending: Map<number, (res: any) => void> = new Map();
   public activeThreadId = 0;
   public activeFrameId = 0;
@@ -21,8 +23,10 @@ export class DelveClient extends EventEmitter {
   private extraArgs: {} = {};
   private isReady: boolean = false;
   private keepAliveInterval: NodeJS.Timeout | null = null;
+  private dlvSocket: net.Socket | null = null;
+  
 
-  private getDlvPath(): string {
+  public getDlvPath(): string {
     let dlvPath = "dlv"; // 默认假设 dlv 在 PATH 中
     // 通过环境变量中 GOPATH 和 GOROOT 查找 dlv
     const goPath = process.env.GOPATH;
@@ -121,22 +125,15 @@ export class DelveClient extends EventEmitter {
   }
 
 
-  private findFreePort(): Promise<number> {
-    return new Promise((resolve, reject) => {
-      const server = net.createServer();
-      server.listen(0, () => {
-        const address = server.address();
-        if (address && typeof address === 'object') {
-          const port = address.port;
-          server.close(() => resolve(port));
-        } else {
-          server.close(() => reject(new Error('Failed to get free port')));
-        }
-      });
-      server.on('error', (err) => {
-        reject(err);
-      });
-    });
+  private async getAvailablePort(): Promise<number> {
+        return new Promise((resolve, reject) => {
+            const server = net.createServer();
+            server.listen(0, () => {
+                const port = (server.address() as net.AddressInfo).port;
+                server.close(() => resolve(port));
+            });
+            server.on('error', reject);
+        });
   }
 
   public address(): string {
@@ -163,6 +160,10 @@ export class DelveClient extends EventEmitter {
     return this.proc;
   }
 
+  public getSocket(): net.Socket | null {
+    return this.dlvSocket;
+  }
+
 
 
   public IsReady(): boolean {
@@ -173,7 +174,7 @@ export class DelveClient extends EventEmitter {
 
   async start(program: string, runName: string, args: string[], workingDir: string, execEnv: NodeJS.ProcessEnv) {
     try {
-      this.port = await this.findFreePort();
+      this.port = await this.getAvailablePort();
       console.log("=== Delve Startup Debug Info ===");
       console.log("Starting dlv on port:", this.port);
       console.log("Program to debug:", program);
@@ -198,11 +199,14 @@ export class DelveClient extends EventEmitter {
 
       this.args =  [
         "dap",
+        //"--headless",
         `--listen=${this.address()}`,
         "--check-go-version=false",
-        "--accept-multiclient=true",
-        //"--log",
-        //"--log-output=dap",
+        //"--accept-multiclient",
+        //"--api-version=2",
+        //"--accept-multiclient=true",
+        "--log",
+        "--log-output=dap",
         //"--log-dest=2"  // 将日志输出到 stderr，便于调试
       ];
 
@@ -389,8 +393,7 @@ export class DelveClient extends EventEmitter {
     
       //this.initializeAndLaunch(program, args);
 
-      // 等待连接稳定后进行 DAP 初始化测试
-      await new Promise(resolve => setTimeout(resolve, 1000));
+   
 
       // // 设置连接超时为5秒
       // this.conn.setTimeout(5000);
@@ -405,35 +408,18 @@ export class DelveClient extends EventEmitter {
       // 设置保持连接的心跳机制
       this.startKeepAlive();
         
-      execEnv = { ...process.env, ...execEnv };
-      // 调用 VSCode Go 插件配置自动调试
-      const debugConfig = {
-        type: 'go',
-        name: runName,
-        request: 'launch',
-        mode: "exec",
-        host: this.host,
-        port: this.port,
-        program: program,
-        args: args,
-        env: execEnv,
-        cwd: workingDir,
-      };
-      
-      const success = await vscode.debug.startDebugging(undefined, debugConfig);
-      if (!success) {
-        // TODO: add debug output tab
-        //vscode.window.showErrorMessage('启动调试失败');
-        this.emit('error', "远程调试连接失败");
-
-        this.emit('error', "启动调试失败");
-      }
  
+     
+
+      
+ 
+
+      
+    await this.connectToDelveClientDap();
+    if(!this.dlvSocket) {
+      this.stop();
+    }
     
-
-
-      
- 
     
     // DAP 请求发送完成，extension 现在控制调试会话
     } catch(error) {
@@ -444,303 +430,92 @@ export class DelveClient extends EventEmitter {
 
  
  
+  private async connectToDelveClientDap(): Promise<void> {
+		const host = this.host;
+		const port = this.port;
+		return new Promise((resolve, reject) => {
+			let retryCount = 0;
+			const maxRetries = 5;
+			let resolved = false;
 
-  // 诊断助手函数
-  public getDiagnosticInfo(): any {
-    return {
-      isReady: this.isReady,
-      processExists: !!this.proc,
-      processKilled: this.proc?.killed,
-      processExitCode: this.proc?.exitCode,
-      processPid: this.proc?.pid,
-      connectionExists: !!this.conn,
-      connectionReadyState: this.conn?.readyState,
-      host: this.host,
-      port: this.port,
-      dlvPath: this.dlvPath,
-      lastArgs: this.args,
-      lastExtraArgs: this.extraArgs,
-      pendingRequestsCount: this.pending.size,
-      pendingRequestIds: Array.from(this.pending.keys())
-    };
-  }
+			const tryConnect = () => {
 
-  // 检查 DAP 连接和 Delve 状态
-  public async checkDapConnection(): Promise<void> {
-    console.log("🔍 === DAP Connection Diagnostic ===");
-    
-    // 1. 检查 Delve 进程状态
-    console.log("1. Delve Process Status:");
-    if (!this.proc) {
-      console.error("   ❌ No Delve process exists");
-      return;
-    }
-    
-    console.log(`   ✅ Process PID: ${this.proc.pid}`);
-    console.log(`   ✅ Process killed: ${this.proc.killed}`);
-    console.log(`   ✅ Process exit code: ${this.proc.exitCode}`);
-    
-    // 2. 检查网络连接
-    console.log("2. Network Connection Status:");
-    if (!this.conn) {
-      console.error("   ❌ No socket connection exists");
-      return;
-    }
-    
-    console.log(`   ✅ Socket ready state: ${this.conn.readyState}`);
-    console.log(`   ✅ Socket destroyed: ${this.conn.destroyed}`);
-    console.log(`   ✅ Socket readable: ${this.conn.readable}`);
-    console.log(`   ✅ Socket writable: ${this.conn.writable}`);
-    console.log(`   ✅ Socket address: ${this.address()}`);
-    
-    // 3. 检查 DAP 请求状态
-    console.log("3. DAP Request Status:");
-    console.log(`   ✅ Pending requests: ${this.pending.size}`);
-    if (this.pending.size > 0) {
-      console.log(`   📋 Pending request IDs: [${Array.from(this.pending.keys()).join(', ')}]`);
-    }
-    
-    // 4. 发送测试 DAP 请求检查连通性
-    console.log("4. Testing DAP Connection:");
-    try {
-      await this.sendDAPRequest('initialize', {
-        clientID: 'diagnostic-test',
-        clientName: 'Diagnostic Test',
-        adapterID: 'go',
-        pathFormat: 'path',
-        linesStartAt1: true,
-        columnsStartAt1: true
-      });
-      console.log("   ✅ DAP connection test successful");
-    } catch (error) {
-      console.error("   ❌ DAP connection test failed:", error);
-    }
-  }
+				let dlvSocket = net.connect(port, host);
 
-  // 打印所有 Delve 日志（stdout/stderr）
-  public printDelveOutput(): void {
-    console.log("🔍 === Delve Output Review ===");
-    console.log("Note: Real-time output is already logged above with 'dlv stdout:' and 'dlv stderr:' prefixes");
-    console.log("Command used:", this.dlvPath, this.args.join(' '));
-    console.log("Working directory:", (this.extraArgs as any)?.cwd);
-    console.log("Environment variables count:", Object.keys((this.extraArgs as any)?.env || {}).length);
-  }
+				dlvSocket.on('connect', () => {
+					console.log(`Connected to DelveClient DAP at ${host}:${port}`);
+					if (!resolved) {
+						resolved = true;
+            this.dlvSocket = dlvSocket;
+						resolve();
+					}
+				});
 
-  // DAP 初始化和启动
-  private async initializeAndLaunch(program: string, args: string[]): Promise<void> {
-    try {
-      console.log("🚀 Starting DAP initialization...");
-      
-      // 1. 发送 initialize 请求
-      console.log("Step 1: Sending initialize request...");
-      const initResponse = await this.sendDAPRequest('initialize', {
-        clientID: 'go-debug-pro',
-        clientName: 'Go Debug Pro',
-        adapterID: 'go',
-        pathFormat: 'path',
-        linesStartAt1: true,
-        columnsStartAt1: true
-      });
-      
-      console.log("✅ Initialize response received:", initResponse);
-      
-      // 等待一小段时间
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      // 2. 发送 launch 请求
-      console.log("Step 2: Sending launch request...");
-      const launchResponse = await this.sendDAPRequest('launch', {
-        name: 'Debug Session',
-        type: 'go',
-        request: 'launch',
-        mode: 'exec',
-        program: program,
-        args: args || [],
-        stopOnEntry: true
-      });
-      
-      console.log("✅ Launch response received:", launchResponse);
-       // 获取所有断点
-      const allBreakpoints = vscode.debug.breakpoints;
+				dlvSocket.on('data', (data) => {
+					const msg = data.toString();
+					console.log('DelveClient DAP received:', msg);
+					this.emit('dapData', msg);
+				});
 
-      // 断点类型通常为 SourceBreakpoint
-      const breakpointsByFile: { [file: string]: Array<{ line: number, condition?: string, hitCondition?: string, logMessage?: string }> } = {};
+				dlvSocket.on('error', (err) => {
+					console.error('DelveClient DAP socket error:', err);
+					
+					// 清理当前连接
+					if (this.dlvSocket) {
+						this.dlvSocket.removeAllListeners();
+						this.dlvSocket.destroy();
+						this.dlvSocket = null;
+					}
+					
+					if (!resolved) {
+						retryCount++;
+						if (retryCount < maxRetries) {
+							console.log(`Retrying connection (${retryCount}/${maxRetries})...`);
+							setTimeout(tryConnect, 500);
+						} else {
+							resolved = true;
+							reject(new Error(`Failed to connect to DelveClient DAP after ${maxRetries} retries`));
+						}
+					}
+				});
 
-      for (const bp of allBreakpoints) {
-        if (bp instanceof vscode.SourceBreakpoint) {
-          const filePath = bp.location.uri.fsPath;
-          const line = bp.location.range.start.line + 1; // VS Code 行号从0开始
-          if (!breakpointsByFile[filePath]) breakpointsByFile[filePath] = [];
-          breakpointsByFile[filePath].push({
-            line,
-            condition: bp.condition,
-            hitCondition: bp.hitCondition,
-            logMessage: bp.logMessage
-          });
-        }
-      }
-      for (const file in breakpointsByFile) {
-        const bps = breakpointsByFile[file];
-        if (bps.length > 0) {
-          console.log(`Sending breakpoints for file: ${file}`, bps);
-          await this.setDAPBreakpoints(file, bps);
-        }
-      }
+				dlvSocket.on('close', () => {
+					console.log('DelveClient DAP socket closed');
+					if (this.dlvSocket) {
+						this.dlvSocket.removeAllListeners();
+						this.dlvSocket = null;
+					}
+					
+					// 只有在连接建立后才停止服务
+					if (resolved) {
+						this.emit('disconnected');
+						// 不要自动调用 stop()，让调用者决定如何处理断开连接
+					}
+				});
+
+				// 设置连接超时
+				dlvSocket.setTimeout(5000);
+				dlvSocket.on('timeout', () => {
+          if (resolved) {
+            return;
+          }
+					console.error('DelveClient DAP connection timeout');
+					if (dlvSocket) {
+						dlvSocket.destroy();
+					}
+				});
+			};
+
+			tryConnect();
+		});
+	}
  
-      
-      
-      // 等待一小段时间
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      // 3. 发送 configurationDone 请求
-      console.log("Step 3: Sending configurationDone request...");
-      const configDoneResponse = await this.sendDAPRequest('configurationDone', {});
-      console.log("✅ ConfigurationDone response received:", configDoneResponse);
-      
-  
-      
-    } catch (error) {
-      console.error("❌ DAP initialization failed:", error);
-      throw error;
-    }
-  }
-
-
-    /**
-   * DAP方式下发断点
-   * @param file 断点文件路径
-   * @param breakpoints [{ line, condition?, hitCondition?, logMessage? }]
-   */
-  public async setDAPBreakpoints(file: string, breakpoints: Array<{ line: number, condition?: string, hitCondition?: string, logMessage?: string }>): Promise<any> {
-    // DAP协议要求参数如下：
-    // {
-    //   source: { path: file },
-    //   breakpoints: [{ line, condition, hitCondition, logMessage }],
-    //   sourceModified: false
-    // }
-    const dapArgs = {
-      source: { path: file },
-      breakpoints: breakpoints.map(bp => ({
-        line: bp.line,
-        condition: bp.condition,
-        hitCondition: bp.hitCondition,
-        logMessage: bp.logMessage
-      })),
-      sourceModified: false
-    };
-    return this.sendDAPRequest('setBreakpoints', dapArgs);
-  }
-  
-  private encodeDAPMessage(msg: any): string {
-    const json = JSON.stringify(msg);
-    return `Content-Length: ${Buffer.byteLength(json, "utf8")}\r\n\r\n${json}`;
-  }
-
-  // 发送 DAP 请求的专用方法
-  private sendDAPRequest(command: string, args: any = {}): Promise<any> {
-    return new Promise((resolve, reject) => {
-      if (!this.conn) {
-        reject(new Error("No connection to delve"));
-        return;
-      }
-
-      const seq = nextId++;
-      const dapRequest = {
-        seq: seq,
-        type: 'request',
-        command: command,
-        arguments: args
-      };
-      
-      const msg = this.encodeDAPMessage(dapRequest) ;
-      console.log("📤 Sending DAP request:", msg.trim());
-      console.log("📤 Request details:", {
-        seq: seq,
-        command: command,
-        argumentsCount: Object.keys(args).length,
-        socketReady: this.conn?.readyState === 'open',
-        pendingRequests: this.pending.size
-      });
-
-      const result = this.conn.write(msg);
-      if (!result) {
-        console.warn("⚠️ Warning: DAP request write returned false, socket buffer may be full");
-        console.log("🔍 Socket state:", {
-          readyState: this.conn?.readyState,
-          destroyed: this.conn?.destroyed,
-          readable: this.conn?.readable,
-          writable: this.conn?.writable
-        });
-      }
-      
-      // 添加超时机制
-      const timeout = setTimeout(() => {
-        this.pending.delete(seq);
-        console.error(`❌ DAP request timeout for command: ${command}`);
-        console.error("🔍 Timeout diagnostics:", {
-          seq: seq,
-          command: command,
-          pendingRequests: this.pending.size,
-          socketState: this.conn?.readyState,
-          delveProcessAlive: this.proc && !this.proc.killed && this.proc.exitCode === null,
-          connectionExists: !!this.conn
-        });
-        reject(new Error(`DAP request timeout for command: ${command}`));
-      }, 10000);
-
-      this.pending.set(seq, res => {
-        clearTimeout(timeout);
-        console.log(`📥 Received DAP response for ${command} (seq ${seq}):`, res);
-        if (res.success === false || (res.message && !res.success)) {
-          reject(new Error(res.message || `DAP command failed: ${command}`));
-        } else {
-          resolve(res.body || res);
-        }
-      });
-    });
-  }
-
-  // 实现 continue 命令
-  private async sendDAPContinue(): Promise<any> {
-    if (!this.conn) {
-      throw new Error("No connection to delve");
-    }
-    // DAP continue 请求格式
-    const seq = nextId++;
-    const dapRequest = {
-      seq: seq,
-      type: 'request',
-      command: 'continue',
-      arguments: { threadId: this.activeThreadId || 1 }
-    };
-    const msg = this.encodeDAPMessage(dapRequest);
-    console.log("📤 Sending DAP continue request:", msg.trim());
-    const result = this.conn.write(msg);
-    if (!result) {
-      console.warn("⚠️ Warning: DAP continue request write returned false, socket buffer may be full");
-    }
-    // 可选：等待响应（如需同步结果，可用 Promise）
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.pending.delete(seq);
-        reject(new Error("DAP continue request timeout"));
-      }, 10000);
-      this.pending.set(seq, res => {
-        clearTimeout(timeout);
-        if (res.success === false || (res.message && !res.success)) {
-          reject(new Error(res.message || "DAP continue failed"));
-        } else {
-          resolve(res.body || res);
-        }
-      });
-    });
-  }
-
+ 
   private startKeepAlive() {
     // 在 DAP 模式下，我们不发送心跳请求，因为 VS Code 会处理所有 DAP 通信
     // 只是定期检查连接状态
     this.keepAliveInterval = setInterval(() => {
-      if (this.conn && this.isReady && this.proc && !this.proc.killed && this.proc.exitCode === null) {
+      if (this.dlvSocket && this.isReady && this.proc && !this.proc.killed && this.proc.exitCode === null) {
         console.log("🟢 DAP connection and process are alive");
       } else {
         console.log("🔴 DAP connection or process issues detected");
@@ -766,9 +541,9 @@ export class DelveClient extends EventEmitter {
     // 停止心跳
     this.stopKeepAlive();
     
-    if (this.conn) {
-      this.conn.destroy();
-      this.conn = null;
+    if (this.dlvSocket) {
+      this.dlvSocket.destroy();
+      this.dlvSocket = null;
     }
     
     if (this.proc && !this.proc.killed) {
@@ -785,188 +560,17 @@ export class DelveClient extends EventEmitter {
     }
   }
 
-  private send(method: string, params: any = {}, timeoutMs: number = 10000): Promise<any> {
-    return new Promise((resolve, reject) => {
-      if (!this.conn) {
-        reject(new Error("No connection to delve"));
-        return;
-      }
-
-      const id = nextId++;
-      const msg = JSON.stringify({ id, method, params }) + "\n";
-      
-      this.conn.write(msg);
-      
-      // 添加超时机制，允许自定义超时时间
-      const timeout = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error("Request timeout"));
-      }, timeoutMs);
-
-      this.pending.set(id, res => {
-        clearTimeout(timeout);
-        if (res.error) {
-          reject(new Error(res.error.message || "Delve error"));
-        } else {
-          resolve(res.result);
-        }
-      });
-    });
-  }
-
-
  
 
-  // 心跳专用方法，使用更短的超时
-  private async pingDelve(): Promise<any> {
-    return this.send("State", {}, 3000); // 3秒超时
-  }
-
-  // 设置断点（支持条件断点和 hit count）
-  async setBreakpoints(file: string, bps: any[]) {
-    const results = [];
-    for (const bp of bps) {
-      try {
-        const args = [`${file}:${bp.line}`];
-        if (bp.condition) {
-          args.push(`-cond=${bp.condition}`);
-        }
-        if (bp.hitCondition) {
-          args.push(`-count=${bp.hitCondition}`);
-        }
-        
-        const result = await this.send("CreateBreakpoint", { 
-          file,
-          line: bp.line,
-          condition: bp.condition,
-          hitCondition: bp.hitCondition,
-          logMessage: bp.logMessage
-        });
-        results.push(result);
-      } catch (error) {
-        console.error(`Failed to set breakpoint at ${file}:${bp.line}:`, error);
-        results.push(null);
-      }
-    }
-    return results;
-  }
-
-  // 清除文件的所有断点
-  async clearBreakpoints(file: string) {
+   
+ 
+  private isProcessRunning(processId: string): boolean {
     try {
-      const breakpoints = await this.send("ListBreakpoints");
-      for (const bp of breakpoints) {
-        if (bp.file === file) {
-          await this.send("ClearBreakpoint", { id: bp.id });
-        }
-      }
+      // 在 Unix 系统上，使用 kill -0 检查进程是否存在
+      process.kill(parseInt(processId), 0);
+      return true;
     } catch (error) {
-      console.error("Failed to clear breakpoints:", error);
+      return false;
     }
-  }
-
-  async run() {
-    return this.send("Command", { name: "continue" });
-  }
-  // 继续执行
-  async continue() { 
-    return this.send("Command", { name: "continue" }); 
-  }
-
-  // 单步执行
-  async next() { 
-    return this.send("Command", { name: "next" }); 
-  }
-
-  // 步入
-  async stepIn() {
-    return this.send("Command", { name: "step" });
-  }
-
-  // 步出
-  async stepOut() {
-    return this.send("Command", { name: "stepout" });
-  }
-
-  // 获取 goroutines 列表
-  async listGoroutines(count = 50) { 
-    return this.send("ListGoroutines", { count }); 
-  }
-
-  // 获取调用栈
-  async stacktrace(goroutineID: number, depth = 20) { 
-    return this.send("StacktraceGoroutine", { 
-      id: goroutineID, 
-      depth, 
-      full: true 
-    }); 
-  }
-
-  // 获取局部变量
-  async localVariables(frame: number, goroutineID: number) { 
-    return this.send("ListLocalVars", { 
-      scope: { goroutineID, frame } 
-    }); 
-  }
-
-  // 获取函数参数
-  async functionArgs(frame: number, goroutineID: number) { 
-    return this.send("ListFunctionArgs", { 
-      scope: { goroutineID, frame } 
-    }); 
-  }
-
-  // 表达式求值
-  async eval(expr: string, scope?: { goroutineID?: number; frame?: number }) { 
-    return this.send("Eval", { 
-      expr, 
-      scope: { 
-        goroutineID: scope?.goroutineID || this.activeThreadId, 
-        frame: scope?.frame || this.activeFrameId 
-      } 
-    }); 
-  }
-
-  // 获取变量的子项
-  async listChildren(varInfo: any) { 
-    return this.send("ListChildren", { 
-      name: varInfo.name,
-      scope: { 
-        goroutineID: this.activeThreadId, 
-        frame: this.activeFrameId 
-      }
-    }); 
-  }
-
-  // 设置变量值
-  async setVariable(scope: any, symbol: string, value: string) {
-    return this.send("SetVariable", {
-      scope: { 
-        goroutineID: scope?.goroutineID || this.activeThreadId, 
-        frame: scope?.frame || this.activeFrameId 
-      },
-      symbol,
-      value
-    });
-  }
-
-  // 获取程序状态
-  async getState() {
-    return this.send("State");
-  }
-
-  // 重启程序
-  async restart() {
-    return this.send("Restart");
-  }
-
-  // 获取断点列表
-  async listBreakpoints() {
-    return this.send("ListBreakpoints");
-  }
-
-  // 获取寄存器信息
-  async listRegisters(threadID: number) {
-    return this.send("ListRegisters", { threadID });
   }
 }

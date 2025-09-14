@@ -17,6 +17,9 @@ import { QuickConfigurationProvider } from './quickConfigurationProvider';
 import { GoDebugOutputProvider } from './goDebugOutputProvider';
 import { GlobalStateManager } from './globalStateManager';
 import { DelveClient } from './delveClient';
+import { DebugSession, DebugSession as GoDebugSession } from './debugAdapter';
+import { DebugProtocol } from 'vscode-debugprotocol';
+
 
 interface RunningConfig {
 	mode: 'run' | 'debug';
@@ -25,11 +28,6 @@ interface RunningConfig {
 	workingDir: string;
 	binaryPath?: string; // For run mode
 	debugSession?: vscode.DebugSession; // For debug mode
-	debugServer?: {
-		host: string;
-		port: number;
-		address: string;
-	}; // For dlv DAP server info
 }
 
 // Global variables
@@ -83,10 +81,10 @@ class ConfigurationStateManager {
 	// 清理所有已退出的进程，防止状态假阳性
 	private cleanupExitedConfigs() {
 		for (const [name, config] of this.runningConfigs.entries()) {
-			if (config.startTime  < Date.now() - 1000) { // 仅清理启动超过1秒的配置，防止误杀刚启动的配置
+			if (config.startTime < Date.now() - 1000) { // 仅清理启动超过1秒的配置，防止误杀刚启动的配置
 				if (!config.process || config.process.killed || config.process.exitCode !== null) {
 					if (config.debugSession) {
-						vscode.debug.stopDebugging(config.debugSession);
+						// vscode.debug.stopDebugging(config.debugSession);
 					}
 				}
 			}
@@ -133,11 +131,7 @@ class ConfigurationStateManager {
 	setConfigStarting(configName: string, mode: 'debug' | 'run'): void {
 		this.cleanupExitedConfigs();
 		const config = this.runningConfigs.get(configName);
-		if (config) {
-			if (config.process?.killed === false) {
-				config.process.kill();
-			}
-		}
+
 		// 同步到全局状态管理器
 		this.globalStateManager.setState(
 			configName,
@@ -173,7 +167,7 @@ class ConfigurationStateManager {
 		this.cleanupExitedConfigs();
 		DebugLogger.log(`Setting configuration '${configName}' as running in ${config.mode} mode`);
 
-	 
+
 
 		this.runningConfigs.set(configName, config);
 
@@ -196,7 +190,6 @@ class ConfigurationStateManager {
 
 			config.process.on('error', (error) => {
 				DebugLogger.error(`Process error for ${configName}: ${error}`);
-				this.setConfigStopped(configName);
 			});
 		}
 		if (globalDebugConfigProvider) {
@@ -208,11 +201,27 @@ class ConfigurationStateManager {
 			globalGoDebugOutputProvider.addOutput(`🚀 Configuration started: ${configName} (${config.mode})`, configName);
 		}
 	}
-	
+
+	setConfigDebugSession(configName: string, proc: cp.ChildProcess | null, dlvSocket: Net.Socket | null, debugSession: vscode.DebugSession): void {
+		const config = this.runningConfigs.get(configName);
+		if (!config) {
+			return;
+		}
+		if (!proc) {
+			return;
+		}
+
+		this.globalStateManager.setState(configName, config.mode as 'debug' | 'run', 'running', proc, debugSession);
+
+		config.process = proc;
+
+		this.runningConfigs.set(configName, config!);
+	}
+
 	private resetConfigState(configName: string): void {
 		const config = this.runningConfigs.get(configName);
 		if (!config) {
-			return ;
+			return;
 		}
 		if (config.mode === 'debug' && config.debugSession) {
 			DebugLogger.log(`Stopping debug session for '${configName}'`);
@@ -975,7 +984,7 @@ Recent debugging sessions and configuration details are logged to the output cha
 				if (!session.configuration) {
 					return;
 				}
-				
+
 				// Update the running configuration with the debug session
 				const configName = session.configuration?.name;
 				if (configName) {
@@ -989,6 +998,7 @@ Recent debugging sessions and configuration details are logged to the output cha
 						}
 
 					}
+
 					// Update the running config with the debug session
 					runningConfig.debugSession = session;
 					stateManager.setConfigRunning(configName, runningConfig);
@@ -1030,11 +1040,12 @@ Recent debugging sessions and configuration details are logged to the output cha
 				const configName = session.configuration?.name;
 				if (configName) {
 					const runningConfig = stateManager.getConfigState(configName);
-					if (runningConfig) {
+					if (runningConfig && runningConfig.debugSession && runningConfig.debugSession.id === session.id) {
+							// Stop the configuration
+						stateManager.setConfigStopped(configName);
 						// Clear the debug session reference
 						runningConfig.debugSession = undefined;
-						// Stop the configuration
-						stateManager.setConfigStopped(configName);
+					
 					}
 				}
 
@@ -1066,6 +1077,18 @@ Recent debugging sessions and configuration details are logged to the output cha
 		})
 	);
 
+	// 注册我们的 DAP 代理 Debug Adapter Factory
+	console.log('🎯 Registering GoDebugAdapterFactory for go-debug-pro');
+	const goDebugAdapterFactory = new GoDebugAdapterFactory();
+	context.subscriptions.push(
+		vscode.debug.registerDebugAdapterDescriptorFactory('go-debug-pro', goDebugAdapterFactory)
+	);
+
+	// 同时支持标准的 'go' 类型以便兼容现有配置
+	console.log('🎯 Registering GoDebugAdapterFactory for go (compatibility)');
+	context.subscriptions.push(
+		vscode.debug.registerDebugAdapterDescriptorFactory('go', goDebugAdapterFactory)
+	);
 
 
 	// Initialize configurations for the debug output panel
@@ -1075,6 +1098,61 @@ Recent debugging sessions and configuration details are logged to the output cha
 			// Don't create any default output - let it start empty
 		}
 	}, 1000);
+}
+
+// Debug Adapter Factory for Go Debug Pro
+class GoDebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory {
+	private outputChannel: vscode.OutputChannel;
+
+	constructor() {
+		this.outputChannel = vscode.window.createOutputChannel('Go Debug Pro Adapter');
+	}
+
+	createDebugAdapterDescriptor(session: vscode.DebugSession): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
+		console.log(`🎯 GoDebugAdapterFactory.createDebugAdapterDescriptor called for session: ${session.name} (${session.type})`);
+		// 使用我们的 DAP 代理作为内联调试适配器
+		const debugSession = new GoDebugSession();
+
+		// 传递额外配置给 debug session
+		DebugLogger.log(`Creating debug adapter for session: ${session.name} (${session.type})`, this.outputChannel);
+
+		// 异步配置 debug session，但不阻塞返回
+		this.configureDebugSession(debugSession, session);
+		// 等待500ms以确保配置开始
+
+		console.log(`🎯 Returning DebugAdapterInlineImplementation with our DebugSession`);
+		return new vscode.DebugAdapterInlineImplementation(debugSession);
+	}
+
+
+	private async configureDebugSession(debugSession: GoDebugSession, session: vscode.DebugSession): Promise<void> {
+		// 通过反射或其他方式配置 debugSession
+		// 注意：这需要在 DebugSession 类中添加相应的方法
+		try {
+			if (!session.configuration) {
+				DebugLogger.error(`Session configuration is undefined`, this.outputChannel);
+				return;
+			}
+			const runningConfig = getConfigurationStateManager().getConfigState(session.configuration.name || '');
+			
+			const stateManager = ConfigurationStateManager.getInstance();
+			DebugLogger.log('Configuration state manager initialized');
+			(global as any).getConfigurationStateManager = () => stateManager;
+
+			console.log('🔄 Waiting for DelveClient to start...');
+			await (debugSession as any).setSessionInfo?.(session);
+			console.log('✅ DelveClient configuration completed');
+			
+			if (debugSession) {
+				const [cp, ds] = debugSession.getDlvInfo();
+				stateManager.setConfigDebugSession(session.configuration.name || '', cp, ds, debugSession);
+			}
+
+			DebugLogger.log(`Configured debug session: `, this.outputChannel);
+		} catch (error) {
+			DebugLogger.error(`Failed to configure debug session: ${error}`, this.outputChannel);
+		}
+	}
 }
 
 // Debug Configuration Provider (Legacy)
@@ -1231,65 +1309,6 @@ async function executeCompileAndDlvDebug(
 		const delveClient = new DelveClient();
 
 
-		// 添加事件监听器来监控 dlv 状态
-		delveClient.on('stdout', (data) => {
-			if (globalGoDebugOutputProvider) {
-				globalGoDebugOutputProvider.addOutput(`📤 DLV: ${data.trim()}`, safeOriginalConfig.name);
-			}
-		});
-
-		delveClient.on('stderr', (data) => {
-			if (globalGoDebugOutputProvider) {
-				globalGoDebugOutputProvider.addOutput(`⚠️ DLV Error: ${data.trim()}`, safeOriginalConfig.name);
-			}
-		});
-
-		delveClient.on('exit', (code, signal) => {
-			const exitMsg = `Delve process exited - code: ${code}, signal: ${signal}`;
-			outputChannel.appendLine(`🔴 ${exitMsg}`);
-			if (globalGoDebugOutputProvider) {
-				globalGoDebugOutputProvider.addOutput(`🔴 ${exitMsg}`, safeOriginalConfig.name);
-			}
-
-
-			// 分析退出原因
-			if (code !== 0) {
-				let reasonMsg = `Delve exited with non-zero code ${code}. `;
-				if (code === 1) {
-					reasonMsg += "This usually indicates a general error.";
-				} else if (code === 2) {
-					reasonMsg += "This usually indicates a command line usage error.";
-				} else if (code === 130) {
-					reasonMsg += "This indicates the process was interrupted (Ctrl+C).";
-				}
-				outputChannel.appendLine(`📋 Exit reason: ${reasonMsg}`);
-			}
-		});
-		delveClient.on('error', (error) => {
-			const errorMsg = `Delve process error: ${error}`;
-			outputChannel.appendLine(`❌ ${errorMsg}`);
-			if (globalGoDebugOutputProvider) {
-				globalGoDebugOutputProvider.addOutput(`❌ ${errorMsg}`, safeOriginalConfig.name);
-			}
-		});
-		delveClient.on('ready', () => {
-			outputChannel.appendLine(`✅ Delve is ready and listening`);
-			if (globalGoDebugOutputProvider) {
-				globalGoDebugOutputProvider.addOutput(`✅ Delve is ready and listening`, safeOriginalConfig.name);
-			}
-		});
-		delveClient.on("stackTrace", (trace) => {
-			if (globalGoDebugOutputProvider) {
-				globalGoDebugOutputProvider.updateStack(trace, safeOriginalConfig.name);
-			}
-		});
-		delveClient.on("variables", (vars) => {
-			if (globalGoDebugOutputProvider) {
-				globalGoDebugOutputProvider.updateVariables(vars, safeOriginalConfig.name);
-			}
-		});
-
-
 
 		// Check if dlv is available
 		try {
@@ -1309,34 +1328,38 @@ async function executeCompileAndDlvDebug(
 				`❌ Error checking dlv: ${error}`,
 				safeOriginalConfig.name
 			);
-
+			stateManager.setConfigStopped(safeOriginalConfig.name);
 			DebugLogger.error(`❌ 'dlv not found. Please install delve: go install github.com/go-delve/delve/cmd/dlv@latest'`, outputChannel);
 			return;
 		}
 
-		if (runConfig.env && Object.keys(runConfig.env).length > 0) {
-			Object.assign(execEnv, runConfig.env);
-			const envStr = Object.entries(runConfig.env)
-				.map(([key, value]) => `${key}="${value}"`)
-				.join(' ');
-			outputChannel.appendLine(`🌍 Environment variables: ${envStr}`);
+		// program: string, runName: string, args: string[], workingDir: string, execEnv: NodeJS.ProcessEnv
+		//await delveClient.start(absoluteBinaryPath, safeOriginalConfig.name, safeOriginalConfig.args || [], safeOriginalConfig.cwd, safeOriginalConfig.env);
+
+		//stateManager.setConfigDlvClient(safeOriginalConfig.name, delveClient);
+
+ 
+		const debugConfig = {
+			//type: 'go',
+			type: 'go-debug-pro',
+
+			name: safeOriginalConfig.name,
+			request: 'launch',
+			mode: "exec",
+			stopOnEntry: false, // Always stop on entry for debug mode
+
+			program: absoluteBinaryPath,
+			args: safeOriginalConfig.args || [],
+			env: safeOriginalConfig.env || {},
+			cwd: safeOriginalConfig.cwd || workspaceFolder.uri.fsPath,
+
+		};
+
+		const success = await vscode.debug.startDebugging(workspaceFolder, debugConfig);
+		if (!success) {
+			throw new Error('Failed to start debug session');
 		}
 
-		let isReady = true;
-		delveClient.on("error", (err) => {
-			logToDebugOutput(`❌ Delve error: ${err}`, safeOriginalConfig.name);
-			stateManager.setConfigStopped(safeOriginalConfig.name);
-			isReady = false;
-			return;
-		});
-		try {
-			await delveClient.start(absoluteBinaryPath, runConfig.name, runConfig.args, runConfig.workingDir || workingDir, execEnv || {});
-		} catch (error) {
-			const errorMsg = `Failed to start Delve: ${error}`;
-			outputChannel.appendLine(`❌ ${errorMsg}`);
-			logToDebugOutput(`❌ ${errorMsg}`, safeOriginalConfig.name);
-			throw error;
-		}
 
 
 	} catch (error) {
@@ -1349,6 +1372,7 @@ async function executeCompileAndDlvDebug(
 			);
 		}
 
+		stateManager.setConfigStopped(safeOriginalConfig.name);
 		// Clean up debug server info on error
 		globalRunningDebugServers.delete(safeOriginalConfig.name);
 
