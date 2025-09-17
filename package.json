@@ -35,6 +35,7 @@
     "Programming Languages"
   ],
   "activationEvents": [
+    "*",
     "onLanguage:go",
     "onDebugResolve:go-debug-pro",
     "onDebug",
@@ -43,6 +44,11 @@
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
+      {
+        "command": "goDebugPro.testActivation",
+        "title": "Test Go Debug Pro Activation",
+        "category": "Go Debug Pro"
+      },
       {
         "command": "goDebugPro.toggleConditionalBreakpoint",
         "title": "Toggle Conditional Breakpoint",
@@ -429,6 +435,27 @@
         ]
       }
     ],
+    "configuration": {
+      "type": "object",
+      "title": "Go Debug Pro Configuration",
+      "properties": {
+        "goDebugPro.telemetryEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable telemetry data collection"
+        },
+        "goDebugPro.suppressWarnings": {
+          "type": "boolean",
+          "default": true,
+          "description": "Suppress non-critical deprecation warnings"
+        },
+        "goDebugPro.networkTimeout": {
+          "type": "number",
+          "default": 5000,
+          "description": "Network timeout in milliseconds for external requests"
+        }
+      }
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -452,6 +479,12 @@
           "name": "Debug Configurations",
           "icon": "$(settings-gear)",
           "contextualTitle": "Go Debug Pro Configurations"
+        },
+        {
+          "id": "goDebugProRunConfigs",
+          "name": "Run Configurations",
+          "icon": "$(play)",
+          "contextualTitle": "Go Debug Pro Run Configurations"
         }
       ],
       "goDebugPanel": [
@@ -485,7 +518,9 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "NODE_OPTIONS='--no-deprecation --disable-warning=ExperimentalWarning' vscode-test",
+    "start": "NODE_OPTIONS='--no-deprecation --disable-warning=ExperimentalWarning' code .",
+    "dev": "NODE_OPTIONS='--no-deprecation --disable-warning=ExperimentalWarning' npm run watch"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -502,6 +537,8 @@
     "@vscode/codicons": "^0.0.40",
     "@vscode/debugadapter": "^1.68.0",
     "@vscode/debugprotocol": "^1.68.0",
+    "json-rpc2": "^2.0.0",
+    "tree-kill": "^1.2.2",
     "vscode-debugadapter": "^1.51.0",
     "vscode-debugprotocol": "^1.51.0"
   }

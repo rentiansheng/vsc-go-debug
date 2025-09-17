@@ -21,13 +21,14 @@ func main() {
 	// 测试基本变量
 	counter := 0
 	message := "Hello Debug"
-	fmt.Printf("开始调试: %s\n", message)
+	fmt.Printf("开始调试: %s\n", message) // 第一个断点 - 第23行
 
 	// 测试结构体
 	person := Person{
 		Name: "Alice",
 		Age:  25,
 	}
+	fmt.Printf("Person: %+v\n", person) // 第二个断点 - 第30行
 
 	// 测试数组和切片
 	numbers := []int{1, 2, 3, 4, 5}

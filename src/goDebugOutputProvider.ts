@@ -6,6 +6,11 @@ import { runDebugConfiguration } from './extension';
 import * as struct from './struct';
 import { StackFrame } from 'vscode-debugadapter';
 
+
+
+
+
+
 export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'goDebugOutput';
 
@@ -14,6 +19,8 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     private _configurations: any[] = [];
     private globalStateManager: GlobalStateManager;
     private stateChangeListener: vscode.Disposable;
+
+    private static instance: GoDebugOutputProvider | null = null;
 
     constructor(private readonly _extensionUri: vscode.Uri) {
         // 初始化全局状态管理器
@@ -44,19 +51,19 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             const timeInfo = ` at ${event.timestamp.toLocaleTimeString()}`;
             
             const statusMessage = `🔄 状态变化: ${oldStateInfo} → ${newStateInfo}${processInfo}${timeInfo}`;
-            this.addOutput(statusMessage, event.configName);
+            //this.addOutput(statusMessage, event.configName);
             
             // 根据新状态显示不同的信息
             if (event.newState.state === 'running') {
                 const startMessage = event.newState.action === 'debug' ? 
                     `🚀 调试会话已启动` : `🚀 运行会话已启动`;
-                this.addOutput(startMessage, event.configName);
+                //this.addOutput(startMessage, event.configName);
             } else if (event.newState.state === 'stopped') {
                 const stopMessage = event.newState.action === 'debug' ? 
                     `⏹️ 调试会话已停止` : `⏹️ 运行会话已停止`;
-                this.addOutput(stopMessage, event.configName);
+                //this.addOutput(stopMessage, event.configName);
             } else if (event.newState.state === 'starting') {
-                this.addOutput(`⏳ 正在启动${event.newState.action === 'debug' ? '调试' : '运行'}会话...`, event.configName);
+                //this.addOutput(`⏳ 正在启动${event.newState.action === 'debug' ? '调试' : '运行'}会话...`, event.configName);
             }
             
             // 更新所有相关的UI组件
@@ -73,8 +80,22 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         
         // 设置持续时间更新定时器
         this.setupDurationUpdateTimer();
+        GoDebugOutputProvider.instance = this;
     }
-    
+
+    public static getInstance( ): GoDebugOutputProvider | null {
+        return GoDebugOutputProvider.instance;
+    }
+
+    public static Output(message: string, tabName: string = 'General'){
+        if (GoDebugOutputProvider.instance) {
+            GoDebugOutputProvider.instance.addOutput(message, tabName);
+        }
+        return ;
+    }
+
+  
+
     private setupDurationUpdateTimer(): void {
         // 每秒更新运行时间显示
         setInterval(() => {

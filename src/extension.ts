@@ -17,8 +17,8 @@ import { QuickConfigurationProvider } from './quickConfigurationProvider';
 import { GoDebugOutputProvider } from './goDebugOutputProvider';
 import { GlobalStateManager } from './globalStateManager';
 import { DelveClient } from './delveClient';
-import { DebugSession, DebugSession as GoDebugSession } from './debugAdapter';
-import { DebugProtocol } from 'vscode-debugprotocol';
+import {  GoDebugSession } from './debugAdapter';
+import { execPath } from 'process';
 
 
 interface RunningConfig {
@@ -482,6 +482,7 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 		outputChannel.appendLine(`   ${goCommand}`);
 
 		outputChannel.appendLine(`\n🚀 Starting ${mode} session...`);
+		
 
 		if (mode === 'run') {
 			// For run mode, use outputChannel only
@@ -491,6 +492,7 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 				outputChannel.appendLine(`❌ No workspace folder found`);
 				return;
 			}
+			
 			try {
 				await executeRunWithDedicatedTerminal(
 					workspaceFolder,
@@ -715,7 +717,64 @@ async function createConfigurationForCurrentFile(context: vscode.ExtensionContex
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
+	// Suppress Node.js deprecation warnings and telemetry errors
+	process.removeAllListeners('warning');
+	process.on('warning', (warning) => {
+		// Only log critical warnings, suppress punycode and telemetry warnings
+		if (!warning.message.includes('punycode') && 
+			!warning.message.includes('ApplicationInsights') &&
+			!warning.message.includes('SQLite') &&
+			!warning.message.includes('ExperimentalWarning')) {
+			console.warn('Extension Warning:', warning.message);
+		}
+	});
+
+	// Suppress unhandled promise rejections for telemetry
+	process.on('unhandledRejection', (reason, promise) => {
+		if (reason && typeof reason === 'object' && 'message' in reason) {
+			const message = (reason as Error).message;
+			if (message.includes('ApplicationInsights') || 
+				message.includes('ERR_NAME_NOT_RESOLVED') ||
+				message.includes('Ingestion endpoint') ||
+				message.includes('ERR_INVALID_ARG_VALUE') ||
+				message.includes('telemetry data') ||
+				message.includes('cannot be empty')) {
+				// Silently ignore telemetry-related errors
+				return;
+			}
+		}
+		console.error('Unhandled Promise Rejection:', reason);
+	});
+
+	// Additional error handler for TypeError related to files
+	process.on('uncaughtException', (error) => {
+		if (error.message.includes('ERR_INVALID_ARG_VALUE') ||
+			error.message.includes('telemetry') ||
+			error.message.includes('cannot be empty')) {
+			// Silently ignore telemetry file errors
+			return;
+		}
+		console.error('Uncaught Exception:', error);
+	});
+
+	// Add multiple logging methods to ensure visibility
+	console.log('🚀 Go Debug Pro extension activation started!');
+	console.error('🚀 Go Debug Pro extension activation started! (using console.error for visibility)');
+	
 	DebugLogger.log('Go Debug Pro extension activation started');
+	
+	// Show a visible notification that extension is activating
+	vscode.window.showInformationMessage('Go Debug Pro extension is activating...');
+	
+	// Create output channel immediately for debugging
+	const activationChannel = vscode.window.createOutputChannel('Go Debug Pro Activation');
+	activationChannel.show();
+	activationChannel.appendLine('🚀 Go Debug Pro Extension Activation Started');
+	activationChannel.appendLine(`Time: ${new Date().toISOString()}`);
+	activationChannel.appendLine(`Extension Path: ${context.extensionPath}`);
+	activationChannel.appendLine(`VS Code Version: ${vscode.version}`);
+	
+	try {
 
 	console.log('Go Debug Pro extension is now active!');
 
@@ -733,17 +792,21 @@ export function activate(context: vscode.ExtensionContext) {
 	const goDebugConfigProvider = new GoDebugConfigProvider();
 	const quickConfigProvider = new QuickConfigurationProvider(context);
 
+	activationChannel.appendLine('✅ Data providers initialized successfully');
+
 	// Register tree view for debug configurations
 	const debugConfigView = vscode.window.createTreeView('goDebugProConfigs', {
 		treeDataProvider: debugConfigProvider,
 		showCollapseAll: true
 	});
+	activationChannel.appendLine('✅ Debug configurations tree view registered');
 
 	// Register tree view for run configurations
 	const runConfigView = vscode.window.createTreeView('goDebugProRunConfigs', {
 		treeDataProvider: runConfigManager,
 		showCollapseAll: true
 	});
+	activationChannel.appendLine('✅ Run configurations tree view registered');
 
 	// Register Go Debug Output Panel webview provider
 	const goDebugOutputProvider = new GoDebugOutputProvider(context.extensionUri);
@@ -753,6 +816,7 @@ export function activate(context: vscode.ExtensionContext) {
 			webviewOptions: { retainContextWhenHidden: true }
 		})
 	);
+	activationChannel.appendLine('✅ Go Debug Output webview provider registered');
 
 
 	// Register the enhanced debug configuration provider for Run and Debug panel
@@ -763,6 +827,13 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider('go-debug-pro', provider));
 
 	// Register commands
+	context.subscriptions.push(
+		vscode.commands.registerCommand('goDebugPro.testActivation', async () => {
+			vscode.window.showInformationMessage('✅ Go Debug Pro Extension is active and working!');
+			activationChannel.appendLine('✅ Test activation command executed successfully');
+		})
+	);
+
 	context.subscriptions.push(
 		vscode.commands.registerCommand('goDebugPro.toggleConditionalBreakpoint', async () => {
 			await breakpointManager.toggleConditionalBreakpoint();
@@ -1086,9 +1157,9 @@ Recent debugging sessions and configuration details are logged to the output cha
 
 	// 同时支持标准的 'go' 类型以便兼容现有配置
 	console.log('🎯 Registering GoDebugAdapterFactory for go (compatibility)');
-	context.subscriptions.push(
-		vscode.debug.registerDebugAdapterDescriptorFactory('go', goDebugAdapterFactory)
-	);
+	// context.subscriptions.push(
+	// 	vscode.debug.registerDebugAdapterDescriptorFactory('go', goDebugAdapterFactory)
+	// );
 
 
 	// Initialize configurations for the debug output panel
@@ -1098,6 +1169,24 @@ Recent debugging sessions and configuration details are logged to the output cha
 			// Don't create any default output - let it start empty
 		}
 	}, 1000);
+	
+	activationChannel.appendLine('✅ Go Debug Pro Extension Activation Completed Successfully');
+	
+	} catch (error) {
+		const errorMsg = `❌ Go Debug Pro Extension Activation Failed: ${error}`;
+		console.error(errorMsg);
+		activationChannel.appendLine(errorMsg);
+		vscode.window.showErrorMessage(errorMsg);
+	}
+}
+
+export function deactivated() {
+	console.log('Go Debug Pro extension is deactivating...');
+	if (globalGoDebugOutputProvider) {
+		globalGoDebugOutputProvider.dispose();
+	}
+	 
+	console.log('Go Debug Pro extension deactivated.');
 }
 
 // Debug Adapter Factory for Go Debug Pro
@@ -1106,51 +1195,33 @@ class GoDebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory {
 
 	constructor() {
 		this.outputChannel = vscode.window.createOutputChannel('Go Debug Pro Adapter');
+		console.log('🎯 GoDebugAdapterFactory initialized');
 	}
 
 	createDebugAdapterDescriptor(session: vscode.DebugSession): vscode.ProviderResult<vscode.DebugAdapterDescriptor> {
 		console.log(`🎯 GoDebugAdapterFactory.createDebugAdapterDescriptor called for session: ${session.name} (${session.type})`);
-		// 使用我们的 DAP 代理作为内联调试适配器
-		const debugSession = new GoDebugSession();
-
-		// 传递额外配置给 debug session
-		DebugLogger.log(`Creating debug adapter for session: ${session.name} (${session.type})`, this.outputChannel);
-
-		// 异步配置 debug session，但不阻塞返回
-		this.configureDebugSession(debugSession, session);
-		// 等待500ms以确保配置开始
-
-		console.log(`🎯 Returning DebugAdapterInlineImplementation with our DebugSession`);
-		return new vscode.DebugAdapterInlineImplementation(debugSession);
+		
+		// 临时返回 undefined 以使用默认适配器，避免干扰配置显示
+		console.log(`🎯 Using default adapter for compatibility`);
+ 
+		
+		// TODO: 未来可以在这里实现自定义调试适配器
+		try {
+			const debugSession = new GoDebugSession(true);
+			debugSession.setDebugSession(session);
+			DebugLogger.log(`Creating debug adapter for session: ${session.name} (${session.type})`, this.outputChannel);
+			return new vscode.DebugAdapterInlineImplementation(debugSession);
+		} catch (error) {
+			DebugLogger.error(`Failed to create GoDebugSession: ${error}`, this.outputChannel);
+			return undefined;
+		}
 	}
 
-
-	private async configureDebugSession(debugSession: GoDebugSession, session: vscode.DebugSession): Promise<void> {
-		// 通过反射或其他方式配置 debugSession
-		// 注意：这需要在 DebugSession 类中添加相应的方法
-		try {
-			if (!session.configuration) {
-				DebugLogger.error(`Session configuration is undefined`, this.outputChannel);
-				return;
-			}
-			const runningConfig = getConfigurationStateManager().getConfigState(session.configuration.name || '');
-			
-			const stateManager = ConfigurationStateManager.getInstance();
-			DebugLogger.log('Configuration state manager initialized');
-			(global as any).getConfigurationStateManager = () => stateManager;
-
-			console.log('🔄 Waiting for DelveClient to start...');
-			await (debugSession as any).setSessionInfo?.(session);
-			console.log('✅ DelveClient configuration completed');
-			
-			if (debugSession) {
-				const [cp, ds] = debugSession.getDlvInfo();
-				stateManager.setConfigDebugSession(session.configuration.name || '', cp, ds, debugSession);
-			}
-
-			DebugLogger.log(`Configured debug session: `, this.outputChannel);
-		} catch (error) {
-			DebugLogger.error(`Failed to configure debug session: ${error}`, this.outputChannel);
+	// 实现 dispose 方法以避免错误
+	dispose(): void {
+		console.log('🎯 GoDebugAdapterFactory disposing...');
+		if (this.outputChannel) {
+			this.outputChannel.dispose();
 		}
 	}
 }
@@ -1306,32 +1377,11 @@ async function executeCompileAndDlvDebug(
 
 
 
-		const delveClient = new DelveClient();
+		const delveClient = new DelveClient("", "");
 
 
 
-		// Check if dlv is available
-		try {
-			const exists = await delveClient.checkDlvExists();
-			if (exists === false) {
-				DebugLogger.error(`❌ 'dlv not found. Please install delve: go install github.com/go-delve/delve/cmd/dlv@latest'`, outputChannel);
-
-				logToDebugOutput(
-					`❌ 'dlv not found. Please install delve: go install github.com/go-delve/delve/cmd/dlv@latest'`,
-					safeOriginalConfig.name
-				);
-
-				return;
-			}
-		} catch (error) {
-			logToDebugOutput(
-				`❌ Error checking dlv: ${error}`,
-				safeOriginalConfig.name
-			);
-			stateManager.setConfigStopped(safeOriginalConfig.name);
-			DebugLogger.error(`❌ 'dlv not found. Please install delve: go install github.com/go-delve/delve/cmd/dlv@latest'`, outputChannel);
-			return;
-		}
+	 
 
 		// program: string, runName: string, args: string[], workingDir: string, execEnv: NodeJS.ProcessEnv
 		//await delveClient.start(absoluteBinaryPath, safeOriginalConfig.name, safeOriginalConfig.args || [], safeOriginalConfig.cwd, safeOriginalConfig.env);
@@ -1345,13 +1395,17 @@ async function executeCompileAndDlvDebug(
 
 			name: safeOriginalConfig.name,
 			request: 'launch',
-			mode: "exec",
-			stopOnEntry: false, // Always stop on entry for debug mode
-
+			mode: "exec", // Use 'exec' mode for compiled binary
+			stopOnEntry: true, // Always stop on entry for debug mode
+			dlvToolPath: delveClient.getDlvExecutablePath(),
+			dlvMode: delveClient.getDlvMode(),
+			dlvFlags: runConfig.dlvFlags || [],
 			program: absoluteBinaryPath,
 			args: safeOriginalConfig.args || [],
 			env: safeOriginalConfig.env || {},
 			cwd: safeOriginalConfig.cwd || workspaceFolder.uri.fsPath,
+			noCheckGoVersion: true, // Skip Go version check to avoid delays
+	 
 
 		};
 
