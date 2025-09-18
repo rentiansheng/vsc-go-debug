@@ -900,7 +900,23 @@ export class Delve {
 	}
 }
 
-export class GoDebugSession extends LoggingDebugSession {
+// EventEmitter mixin interface
+interface EventEmitterMixin {
+	on(event: string | symbol, listener: (...args: any[]) => void): this;
+	once(event: string | symbol, listener: (...args: any[]) => void): this;
+	off(event: string | symbol, listener: (...args: any[]) => void): this;
+	emit(event: string | symbol, ...args: any[]): boolean;
+	addListener(event: string | symbol, listener: (...args: any[]) => void): this;
+	removeListener(event: string | symbol, listener: (...args: any[]) => void): this;
+	removeAllListeners(event?: string | symbol): this;
+	listeners(event: string | symbol): Function[];
+	listenerCount(event: string | symbol): number;
+	prependListener(event: string | symbol, listener: (...args: any[]) => void): this;
+	prependOnceListener(event: string | symbol, listener: (...args: any[]) => void): this;
+	eventNames(): Array<string | symbol>;
+}
+
+export class GoDebugSession extends LoggingDebugSession implements EventEmitterMixin {
 	private variableHandles: Handles<DebugVariable>;
 	private breakpoints: Map<string, DebugBreakpoint[]>;
 	// Editing breakpoints requires halting delve, skip sending Stop Event to VS Code in such cases
@@ -919,6 +935,9 @@ export class GoDebugSession extends LoggingDebugSession {
 	private localToRemotePathMapping = new Map<string, string>();
 	private remoteToLocalPathMapping = new Map<string, string>();
 
+	// EventEmitter instance for event handling
+	private eventEmitter?: EventEmitter;
+
 	// TODO(suzmue): Use delve's implementation of substitute-path.
 	private substitutePath?: { from: string; to: string }[];
 
@@ -931,13 +950,116 @@ export class GoDebugSession extends LoggingDebugSession {
 	private debugSession : vscode.DebugSession | undefined;
 
 	public constructor(debuggerLinesStartAt1: boolean, isServer = false, readonly fileSystem = fs) {
-		super('', debuggerLinesStartAt1, isServer);
+		super('go-debug.txt', debuggerLinesStartAt1, isServer);
 		this.variableHandles = new Handles<DebugVariable>();
 		this.skipStopEventOnce = false;
 		this.overrideStopReason = '';
 		this.stopOnEntry = false;
 		this.breakpoints = new Map<string, DebugBreakpoint[]>();
 		this.stackFrameHandles = new Handles<[number, number]>();
+		
+		// Initialize EventEmitter
+		this.initializeEventEmitter();
+	}
+
+	private initializeEventEmitter(): void {
+		try {
+			this.eventEmitter = new EventEmitter();
+			console.log('EventEmitter initialized successfully');
+		} catch (error) {
+			console.error('Failed to initialize EventEmitter:', error);
+			throw error;
+		}
+	}
+
+	private ensureEventEmitter(): EventEmitter {
+		if (!this.eventEmitter) {
+			console.warn('EventEmitter was not initialized, creating new instance');
+			this.eventEmitter = new EventEmitter();
+		}
+		return this.eventEmitter;
+	}
+
+	// EventEmitter methods implementation
+	public on(event: string | symbol, listener: (...args: any[]) => void): this {
+		this.ensureEventEmitter().on(event, listener);
+		return this;
+	}
+
+	public once(event: string | symbol, listener: (...args: any[]) => void): this {
+		this.ensureEventEmitter().once(event, listener);
+		return this;
+	}
+
+	public off(event: string | symbol, listener: (...args: any[]) => void): this {
+		this.ensureEventEmitter().off(event, listener);
+		return this;
+	}
+
+	public emit(event: string | symbol, ...args: any[]): boolean {
+		return this.ensureEventEmitter().emit(event, ...args);
+	}
+
+	public addListener(event: string | symbol, listener: (...args: any[]) => void): this {
+		this.ensureEventEmitter().addListener(event, listener);
+		return this;
+	}
+
+	public removeListener(event: string | symbol, listener: (...args: any[]) => void): this {
+		this.ensureEventEmitter().removeListener(event, listener);
+		return this;
+	}
+
+	public removeAllListeners(event?: string | symbol): this {
+		this.ensureEventEmitter().removeAllListeners(event);
+		return this;
+	}
+
+	public listeners(event: string | symbol): Function[] {
+		return this.ensureEventEmitter().listeners(event);
+	}
+
+	public listenerCount(event: string | symbol): number {
+		return this.ensureEventEmitter().listenerCount(event);
+	}
+
+	public prependListener(event: string | symbol, listener: (...args: any[]) => void): this {
+		this.ensureEventEmitter().prependListener(event, listener);
+		return this;
+	}
+
+	public prependOnceListener(event: string | symbol, listener: (...args: any[]) => void): this {
+		this.ensureEventEmitter().prependOnceListener(event, listener);
+		return this;
+	}
+
+	public eventNames(): Array<string | symbol> {
+		return this.ensureEventEmitter().eventNames();
+	}
+
+	// Custom event methods for debugging workflow
+	public emitDebugEvent(eventType: string, data?: any): void {
+		this.emit('debug-event', { type: eventType, data, timestamp: Date.now() });
+	}
+
+	public onDebugEvent(listener: (event: { type: string; data?: any; timestamp: number }) => void): this {
+		return this.on('debug-event', listener);
+	}
+
+	public emitBreakpointEvent(action: 'set' | 'removed' | 'hit', breakpoint: any): void {
+		this.emit('breakpoint', { action, breakpoint, timestamp: Date.now() });
+	}
+
+	public onBreakpointEvent(listener: (event: { action: string; breakpoint: any; timestamp: number }) => void): this {
+		return this.on('breakpoint', listener);
+	}
+
+	public emitStateChange(oldState: string, newState: string): void {
+		this.emit('state-change', { oldState, newState, timestamp: Date.now() });
+	}
+
+	public onStateChange(listener: (event: { oldState: string; newState: string; timestamp: number }) => void): this {
+		return this.on('state-change', listener);
 	}
 
 	public setDebugSession(debugSession: vscode.DebugSession) {
@@ -1047,6 +1169,9 @@ export class GoDebugSession extends LoggingDebugSession {
 	): Promise<void> {
 		log('ConfigurationDoneRequest');
 		if (this.stopOnEntry) {
+			this.emitStateChange('running', 'paused');
+			this.emitDebugEvent('stopped-on-entry');
+			this.emit('stopped', this.debugState);
 			this.sendEvent(new StoppedEvent('entry', 1));
 			log('StoppedEvent("entry")');
 		} else if (!(await this.isDebuggeeRunning())) {
@@ -1380,6 +1505,7 @@ export class GoDebugSession extends LoggingDebugSession {
 		args: DebugProtocol.SetBreakpointsArguments
 	): Promise<void> {
 		log('SetBreakPointsRequest');
+		this.emitDebugEvent('breakpoints-request', { source: args.source?.path, breakpoints: args.breakpoints });
 		if (!(await this.isDebuggeeRunning())) {
 			log('Debuggee is not running. Setting breakpoints without halting.');
 			await this.setBreakPoints(response, args);
@@ -1532,6 +1658,8 @@ export class GoDebugSession extends LoggingDebugSession {
 				}
 				response.body = { stackFrames, totalFrames: locations.length };
 				this.sendResponse(response);
+				this.emit('refresh-stack-trace',  { stackFrames, totalFrames: locations.length });
+
 				log('StackTraceResponse');
 			}
 		);
@@ -1691,6 +1819,7 @@ export class GoDebugSession extends LoggingDebugSession {
 									scopes.push(
 										new Scope('Global', this.variableHandles.create(globalVariables), false)
 									);
+									this.emit('refresh-scopes', scopes );
 									this.sendResponse(response);
 									log('ScopesResponse');
 								}
@@ -1736,7 +1865,8 @@ export class GoDebugSession extends LoggingDebugSession {
 								name: '[' + i + ']',
 								value: result,
 								evaluateName: vari.fullyQualifiedName + '[' + i + ']',
-								variablesReference
+								variablesReference,
+								type: v.type,
 							};
 						}
 					);
@@ -1758,7 +1888,8 @@ export class GoDebugSession extends LoggingDebugSession {
 									name: mapKey.result,
 									value: mapValue.result,
 									evaluateName: vari.fullyQualifiedName + '[' + mapKey.result + ']',
-									variablesReference: mapValue.variablesReference
+									variablesReference: mapValue.variablesReference,
+									type: vari.children[i + 1].type
 								} as DebugProtocol.Variable;
 							});
 						}
@@ -1776,7 +1907,8 @@ export class GoDebugSession extends LoggingDebugSession {
 								name: v.name,
 								value: result,
 								evaluateName: v.fullyQualifiedName,
-								variablesReference
+								variablesReference,
+								type: v.type,
 							};
 						}
 					);
@@ -1786,12 +1918,16 @@ export class GoDebugSession extends LoggingDebugSession {
 		variablesPromise.then((variables) => {
 			response.body = { variables };
 			this.sendResponse(response);
+			this.emit('refresh-variables', variables );
+			 
 			log('VariablesResponse', JSON.stringify(variables, null, ' '));
 		});
 	}
 
 	protected continueRequest(response: DebugProtocol.ContinueResponse): void {
 		log('ContinueRequest');
+		this.emitStateChange('paused', 'running');
+		this.emitDebugEvent('continue-request');
 		this.continue();
 		this.sendResponse(response);
 		log('ContinueResponse');
@@ -2533,6 +2669,11 @@ export class GoDebugSession extends LoggingDebugSession {
 					this.overrideStopReason = '';
 				}
 
+				this.emitStateChange('running', 'paused');
+				this.emitDebugEvent('stopped', { reason, goroutineId: this.debugState?.currentGoroutine.id });
+				if (this.debugState) {
+					this.emit('stopped', this.debugState);
+				}
 				const stoppedEvent = new StoppedEvent(reason, this.debugState?.currentGoroutine.id);
 				(<any>stoppedEvent.body).allThreadsStopped = true;
 				this.sendEvent(stoppedEvent);
@@ -2883,4 +3024,34 @@ function queryGOROOT(cwd: any, env: any): Promise<string> {
 		);
 	});
 }
+
+/*
+Example usage of events:
+
+// Create debug session
+const debugSession = new GoDebugSession(true, false);
+
+// Listen to debug events
+debugSession.onDebugEvent((event) => {
+	console.log(`Debug event: ${event.type}`, event.data);
+});
+
+// Listen to state changes
+debugSession.onStateChange((event) => {
+	console.log(`State changed from ${event.oldState} to ${event.newState}`);
+});
+
+// Listen to breakpoint events
+debugSession.onBreakpointEvent((event) => {
+	console.log(`Breakpoint ${event.action}:`, event.breakpoint);
+});
+
+// Listen to custom events
+debugSession.on('custom-event', (data) => {
+	console.log('Custom event received:', data);
+});
+
+// Emit custom events
+debugSession.emit('custom-event', { message: 'Hello from debug session!' });
+*/
 

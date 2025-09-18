@@ -19,6 +19,7 @@ import { GlobalStateManager } from './globalStateManager';
 import { DelveClient } from './delveClient';
 import {  GoDebugSession } from './debugAdapter';
 import { execPath } from 'process';
+import { debug } from 'console';
 
 
 interface RunningConfig {
@@ -1207,8 +1208,40 @@ class GoDebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory {
 		
 		// TODO: 未来可以在这里实现自定义调试适配器
 		try {
-			const debugSession = new GoDebugSession(true);
+			DebugLogger.log(`Creating GoDebugSession...`, this.outputChannel);
+			console.log('About to create GoDebugSession with parameters: true, false, fs');
+			const debugSession = new GoDebugSession(true, false);
+			console.log('GoDebugSession created, checking methods...');
+			console.log('debugSession.on type:', typeof debugSession.on);
+			console.log('debugSession.emit type:', typeof debugSession.emit);
+			console.log('debugSession methods:', Object.getOwnPropertyNames(debugSession));
+			
+			DebugLogger.log(`GoDebugSession created successfully`, this.outputChannel);
 			debugSession.setDebugSession(session);
+			
+			DebugLogger.log(`Setting up event listeners...`, this.outputChannel);
+			if (typeof debugSession.on === 'function') {
+				debugSession.on("stopped", (event) => {
+					globalGoDebugOutputProvider?.addOutput(`Debug session stopped: ${JSON.stringify(event)}`, session.configuration?.name);	
+					DebugLogger.log(`Debug session stopped: ${JSON.stringify(event)}`, this.outputChannel);
+				});
+				
+				const cfgName = session.configuration?.name;
+				if (cfgName) {
+					debugSession.on("refresh-variables", (variables) => {
+						globalGoDebugOutputProvider?.addVariables(variables, cfgName);
+					});
+					debugSession.on("refresh-stack-trace", (stackTrace) => {
+						globalGoDebugOutputProvider?.addStack(stackTrace, cfgName);
+					});
+					debugSession.on("refresh-scopes", (scopes) => {
+						globalGoDebugOutputProvider?.addScopes(scopes, cfgName);
+					});
+				}
+			} else {
+				DebugLogger.error(`GoDebugSession.on is not a function: ${typeof debugSession.on}`, this.outputChannel);
+			}
+			
 			DebugLogger.log(`Creating debug adapter for session: ${session.name} (${session.type})`, this.outputChannel);
 			return new vscode.DebugAdapterInlineImplementation(debugSession);
 		} catch (error) {
@@ -1396,7 +1429,7 @@ async function executeCompileAndDlvDebug(
 			name: safeOriginalConfig.name,
 			request: 'launch',
 			mode: "exec", // Use 'exec' mode for compiled binary
-			stopOnEntry: true, // Always stop on entry for debug mode
+			stopOnEntry: false, // Always stop on entry for debug mode
 			dlvToolPath: delveClient.getDlvExecutablePath(),
 			dlvMode: delveClient.getDlvMode(),
 			dlvFlags: runConfig.dlvFlags || [],
@@ -1405,6 +1438,7 @@ async function executeCompileAndDlvDebug(
 			env: safeOriginalConfig.env || {},
 			cwd: safeOriginalConfig.cwd || workspaceFolder.uri.fsPath,
 			noCheckGoVersion: true, // Skip Go version check to avoid delays
+
 	 
 
 		};

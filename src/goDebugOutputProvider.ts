@@ -4,8 +4,26 @@ import * as fs from 'fs';
 import { GlobalStateManager, ConfigState, StateChangeEvent } from './globalStateManager';
 import { runDebugConfiguration } from './extension';
 import * as struct from './struct';
-import { StackFrame } from 'vscode-debugadapter';
+ import {
+	ContinuedEvent,
+	DebugSession,
+	ErrorDestination,
+	Handles,
+	InitializedEvent,
+	logger,
+	Logger,
+	LoggingDebugSession,
+	OutputEvent,
+	Scope,
+	Source,
+	StackFrame,
+	StoppedEvent,
+	TerminatedEvent,
+	Thread
 
+} from 'vscode-debugadapter';
+
+import { DebugProtocol } from 'vscode-debugprotocol';
 
 
 
@@ -94,7 +112,23 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         return ;
     }
 
-  
+    public static Variables(variables: DebugProtocol.Variable[], tabName: string = 'General'){
+        if (GoDebugOutputProvider.instance) {
+            GoDebugOutputProvider.instance.updateVariables(tabName, variables);
+        }
+
+    }
+
+    public static Stack(stacks:  { stackFrames: DebugProtocol.StackFrame[], totalFrames: number }, tabName: string = 'General'){
+        if (GoDebugOutputProvider.instance) {
+            GoDebugOutputProvider.instance.updateStack(tabName, stacks);
+        }
+    }
+    public static Scopes(scopes: DebugProtocol.Scope[], tabName: string = 'General'){
+        if (GoDebugOutputProvider.instance) {
+            GoDebugOutputProvider.instance.updateScopes(tabName, scopes);
+        }
+    }
 
     private setupDurationUpdateTimer(): void {
         // 每秒更新运行时间显示
@@ -183,6 +217,9 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 switch (message.command) {
                     case 'toolbarAction':
                         this.handleToolbarAction(message.action, message.tabName);
+                        break;
+                    case 'gotoSource':
+                        this.handleGotoSource(message.path, message.line, message.column);
                         break;
                 }
             },
@@ -335,7 +372,34 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         this._updateWebview(tabName, logEntry);
     }
 
- 
+    public addVariables(variables: DebugProtocol.Variable[], tabName: string = 'General') {
+         if (!this._outputTabs.has(tabName)) {
+            this._outputTabs.set(tabName, []);
+            // Auto-create tab if it doesn't exist
+            this._sendCreateTabMessage(tabName);
+        }
+        this.updateVariables(tabName, variables);
+    }
+
+    public addStack(stacks:  { stackFrames: DebugProtocol.StackFrame[], totalFrames: number }, tabName: string = 'General') {
+
+        if (!this._outputTabs.has(tabName)) {
+            this._outputTabs.set(tabName, []);
+            // Auto-create tab if it doesn't exist
+            this._sendCreateTabMessage(tabName);
+        }
+        this.updateStack(tabName, stacks);
+    }
+
+    public addScopes( scopes: DebugProtocol.Scope[], tabName: string = 'General') {
+        if (!this._outputTabs.has(tabName)) {
+            this._outputTabs.set(tabName, []);
+            // Auto-create tab if it doesn't exist
+            this._sendCreateTabMessage(tabName);
+        }
+        this.updateScopes(tabName, scopes);
+    }
+
     /**
      * 处理 Delve 调试器的特定消息
      */
@@ -531,6 +595,52 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                     vscode.commands.executeCommand('workbench.action.debug.stepOut');
                 }
                 break;
+        }
+    }
+
+    /**
+     * 处理跳转到源码的请求
+     */
+    private async handleGotoSource(filePath: string, line: number, column?: number): Promise<void> {
+        try {
+            // 检查文件是否存在
+            if (!fs.existsSync(filePath)) {
+                vscode.window.showErrorMessage(`文件不存在: ${filePath}`);
+                return;
+            }
+
+            // 创建文件URI
+            const fileUri = vscode.Uri.file(filePath);
+            
+            // 打开文档
+            const document = await vscode.workspace.openTextDocument(fileUri);
+            
+            // 显示文档并跳转到指定位置
+            const editor = await vscode.window.showTextDocument(document, {
+                viewColumn: vscode.ViewColumn.One,
+                preserveFocus: false
+            });
+
+            // 创建位置对象 (VS Code使用0基索引)
+            const position = new vscode.Position(
+                Math.max(0, line - 1), // 行号转换为0基索引
+                Math.max(0, (column || 1) - 1) // 列号转换为0基索引，默认为第1列
+            );
+
+            // 设置光标位置和选中范围
+            editor.selection = new vscode.Selection(position, position);
+            
+            // 滚动到指定位置，确保该行在编辑器中可见
+            editor.revealRange(
+                new vscode.Range(position, position), 
+                vscode.TextEditorRevealType.InCenterIfOutsideViewport
+            );
+
+            console.log(`[GoDebugOutputProvider] 成功跳转到: ${filePath}:${line}:${column || 1}`);
+            
+        } catch (error) {
+            console.error(`[GoDebugOutputProvider] 跳转源码失败:`, error);
+            vscode.window.showErrorMessage(`无法打开文件: ${filePath}. 错误: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
 
@@ -742,7 +852,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     /**
      * 更新变量和调用栈信息
      */
-    public updateVariablesAndStack(tabName: string, variables?: any[], callStack?: any[]) {
+    private updateVariablesAndStack(tabName: string, variables?: DebugProtocol.Variable[], callStack?:  { stackFrames: DebugProtocol.StackFrame[], totalFrames: number } ) {
         if (this._view) {
             this._view.webview.postMessage({
                 command: 'updateVariables',
@@ -753,12 +863,22 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    public updateVariables(tabName: string, variables: struct.DAPVariableResponse) {
+    private updateVariables(tabName: string, variables: DebugProtocol.Variable[]) {
         this._sendVariablesMessage(tabName, variables);
     }
 
-    public updateStack(tabName: string, stack: struct.DAPStackTraceResponse) {
-        this._sendStackMessage(tabName, stack);
+    private updateStack(tabName: string, stacks:  { stackFrames: DebugProtocol.StackFrame[], totalFrames: number } ) {
+        this._sendStackMessage(tabName, stacks);
+    }
+
+    private updateScopes(tabName: string, scopes: DebugProtocol.Scope[]) {
+        if (this._view) {
+            this._view.webview.postMessage({
+                command: 'updateScopes',
+                tabName: tabName,
+                scopes: scopes || []
+            });
+        }
     }
 
     public refreshConfigurations() {
@@ -793,8 +913,26 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private _sendStackMessage(tabName: string, stack: struct.DAPStackTraceResponse) {
+    private _sendStackMessage(tabName: string, stack:  { stackFrames: DebugProtocol.StackFrame[], totalFrames: number } ) {
         if (this._view) {
+            
+            // stack.stackFrames 所有元素，新加一个字段叫 title  = true， 等所有数据处理完成，然后再执行 this._view.webview.postMessage
+            stack.stackFrames.forEach(frame => {
+                const fileLinePath =  `${frame?.source?.path}:${frame.line}` ;
+                // 删除当前 worker 打开项目时的路径前缀
+                const workspaceFolders = vscode.workspace.workspaceFolders;
+                if (workspaceFolders && workspaceFolders.length > 0) {
+                    const workspacePath = workspaceFolders[0].uri.fsPath;
+                    if (fileLinePath.startsWith(workspacePath)) {
+                        (frame as any).title = fileLinePath.replace(workspacePath, '').replace(/^\//, '');
+                    } else {
+                        (frame as any).title = fileLinePath;
+                    }
+                } else {
+                    (frame as any).title = fileLinePath;
+                }
+            });
+
             this._view.webview.postMessage({
                 command: 'updateStack',
                 tabName: tabName,
@@ -803,7 +941,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private _sendVariablesMessage(tabName: string, variables: struct.DAPVariableResponse) {
+    private _sendVariablesMessage(tabName: string, variables: DebugProtocol.Variable[]) {
         if (this._view) {
             this._view.webview.postMessage({
                 command: 'updateVariables',
@@ -1152,6 +1290,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         
         .variables-content {
             flex: 1;
+            white-space: nowrap;
             overflow-y: auto;
             overflow-x: hidden;
             min-height: 0;
@@ -1166,10 +1305,10 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
         
         .stack-section {
+            margin-left:3px;
             width: 25%;
             min-width: 150px;
             max-width: 60%;
-            padding: 10px;
             border-right: 1px solid var(--vscode-panel-border);
             display: flex;
             flex-direction: column;
@@ -1178,7 +1317,6 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         
         .variables-section {
             flex: 1;
-            padding: 10px;
             display: flex;
             flex-direction: column;
             overflow: hidden;
@@ -1206,28 +1344,23 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             bottom: 0;
         }
         
-        .variables-section h4, .stack-section h4 {
-            margin: 0 0 8px 0;
-            font-size: 12px;
-            font-weight: bold;
-            color: var(--vscode-foreground);
-            border-bottom: 1px solid var(--vscode-panel-border);
-            padding-bottom: 4px;
-        }
-        
+ 
         .variables-list, .stack-list {
+            margin-left: 3px;
             font-family: var(--vscode-editor-font-family);
             font-size: 11px;
             flex: 1;
             overflow-y: auto;
-            padding: 4px;
             background-color: var(--vscode-editor-background);
             border: 1px solid var(--vscode-panel-border);
             border-radius: 3px;
-            margin-top: 8px;
+            list-style: none;
+            padding: 0;
+            margin: 0;
         }
         
         .variable-item, .stack-item {
+            
             padding: 2px 4px;
             margin: 1px 0;
             border-radius: 2px;
@@ -1316,11 +1449,14 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
           font-style: italic;
           background: #f0f0f0;
         }
-        .output-content .frame-header { font-weight: bold; color: #2457a3; }
+  
         .output-content .frame-location {
           color: #888;
           font-size: 13px;
           margin-top: 3px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
         .output-content .frame-addr {
           color: #aaa; font-size: 12px;
@@ -1512,14 +1648,13 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 variablesContent.innerHTML = \`
                     <div class="variables-panel">
                         <div class="stack-section">
-                            <h6>Call Stack</h6>
+                            <div>Call Stack</div>
                             <div class="stack-list">
-                                <div class="empty-state">No call stack available. Start debugging to see call stack.</div>
                             </div>
                         </div>
                         <div class="resize-handle"></div>
                         <div class="variables-section">
-                            <h6>Variables</h6>
+                            <div>Variables</div>
                             <div class="variables-list">
                                 <div class="empty-state">No variables available. Start debugging to see variables.</div>
                             </div>
@@ -1708,85 +1843,51 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 outputContent.style.display = 'none';
                 variablesContent.style.display = 'block';
                 // Update variables and stack when switching to this view
-                updateVariablesView(configName);
             }
         }
         
-        function updateVariablesView(configName) {
-            // This function will be called to update variables and call stack
-            // For now, we'll just show placeholder content
-            const tabContent = document.querySelector(\`[data-content="\${configName}"]\`);
-            if (!tabContent) return;
-            
-            const variablesContent = tabContent.querySelector('.variables-content');
-            if (!variablesContent) return;
-            
-            // In a real implementation, you would fetch actual debug data here
-            // For now, we'll show some example data
-            const stackList = variablesContent.querySelector('.stack-list');
-            const variablesList = variablesContent.querySelector('.variables-list');
-            
-            if (stackList) {
-                stackList.innerHTML = \`
-                    <div class="stack-item">📍 main.main() - main.go:25</div>
-                    <div class="stack-item">🔄 main.processData() - main.go:15</div>
-                    <div class="stack-item">🔄 main.validateInput() - main.go:8</div>
-                    <div class="stack-item">⚙️ runtime.main() - proc.go:250</div>
-                    <div class="stack-item">⚙️ runtime.goexit() - asm_amd64.s:1571</div>
-                \`;
-            }
-            
-            if (variablesList) {
-                variablesList.innerHTML = \`
-                    <div class="variable-item">
-                        <span class="variable-name">msg</span>
-                        <span class="variable-value">"Hello, World!"</span>
-                        <span class="variable-type">string</span>
-                    </div>
-                    <div class="variable-item">
-                        <span class="variable-name">count</span>
-                        <span class="variable-value">42</span>
-                        <span class="variable-type">int</span>
-                    </div>
-                    <div class="variable-item">
-                        <span class="variable-name">isDebug</span>
-                        <span class="variable-value">true</span>
-                        <span class="variable-type">bool</span>
-                    </div>
-                    <div class="variable-item">
-                        <span class="variable-name">users</span>
-                        <span class="variable-value">[]User{...}</span>
-                        <span class="variable-type">[]User</span>
-                    </div>
-                \`;
-        }
-        }
+   
 
 
-        function updateStack(configName, callStack) {
+        function updateStack(configName, stack) {
             const tabContent = document.querySelector(\`[data-content="\${configName}"]\`);
             if (!tabContent) return;
             
  
-            const stackList = variablesContent.querySelector('.stack-list');
+            const stackList = tabContent.querySelector('.stack-list');
             if (!stackList) { console.warn('Stack list element not found'); return; }
+            if (!stack || stack.totalFrames === 0) { 
+                stackList.innerHTML = '<div class="empty-state">No call stack available.</div>'; 
+                return; 
+            }
+            
+            stackList.innerHTML = '';
+            if (!stack.stackFrames || stack.stackFrames.length === 0) {
+                stackList.innerHTML = '<div class="empty-state">No call stack available.</div>'; 
+                return; 
+            }
 
-            stack.forEach((frame, idx) => {
+            stack.stackFrames.forEach((frame, idx) => {
                 const li = document.createElement('li');
+                const filePath = frame.source.path;
+                const fileLinePath = frame.title;
                 li.className = 'stack-item' + (frame.presentationHint === 'subtle' ? ' subtle' : '');
+                li.setAttribute('data-frame-id', frame.id);
+                li.setAttribute('title', fileLinePath);
+                li.setAttribute('data-index', idx);
                 li.innerHTML = \`
-                    <div class="frame-header">\${frame.name}</div>
-                    <div class="frame-location" title="\${frame.source.path}">
-                    <span style="color:#1976d2;text-decoration:underline;cursor:pointer;" class="source-link">\${frame.source.name}</span> :\${frame.line}
+                    <div class="frame-location">
+                        <span style="color:#1976d2;text-decoration:underline;cursor:pointer;" class="source-link"> \${fileLinePath}</span>
                     </div>
-                    <div class="frame-addr">IP: \${frame.instructionPointerReference}</div>
                 \`;
+ 
+ 
                 // 点击跳转源码
                 li.querySelector('.source-link').onclick = (e) => {
                     e.stopPropagation();
-                    window.vscode.postMessage({
+                    vscode.postMessage({
                     command: 'gotoSource',
-                    path: frame.source.path,
+                    path: filePath,
                     line: frame.line,
                     column: frame.column
                     });
@@ -1801,13 +1902,17 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
 
         }
 
+        function updateScopes(tabName, scopes) {
+            console.log('Updating scopes for tab:', tabName, scopes);
+        }
+
         function updateVariables(tabName, variables) {
             const tabContent = document.querySelector(\`[data-content="\${tabName}"]\`);
-            const variablesContent = tabContent.querySelector('.variables-content');
-            if (!variablesContent) return;
             if (!tabContent) return;
+            const variablesList = tabContent.querySelector('.variables-list');
+            if (!variablesList) return;
              // Update variables (右侧)
-            if (variablesList && variables && variables.length > 0) {
+            if (variables && variables.length > 0) {
                 variablesList.innerHTML = variables.map(variable => \`
                     <div class="variable-item">
                         <span class="variable-name">\${variable.name}</span>
@@ -1815,7 +1920,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                         <span class="variable-type">\${variable.type}</span>
                     </div>
                 \`).join('');
-            } else if (variablesList) {
+            } else if (variables) {
                 variablesList.innerHTML = '<div class="empty-state">No variables available.</div>';
             }
         }
@@ -2024,8 +2129,13 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                     }
                     break;
                 case 'updateStack':
-                    if (message.tabName && message.callStack) {
-                        updateStack(message.tabName, message.callStack);
+                    if (message.tabName && message.stack) {
+                        updateStack(message.tabName, message.stack);
+                    }
+                    break;
+                case "updateScopes":
+                    if (message.tabName && message.scopes) {
+                        updateScopes(message.tabName, message.scopes);
                     }
                     break;
                 
