@@ -1916,7 +1916,8 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 variablesList.innerHTML = variables.map(variable => \`
                     <div class="variable-item">
                         <span class="variable-name">\${variable.name}</span>
-                        <span class="variable-value">\${variable.value}</span>
+                        (<span class="variable-value">\${variable.value}</span>)
+                        =
                         <span class="variable-type">\${variable.type}</span>
                     </div>
                 \`).join('');
