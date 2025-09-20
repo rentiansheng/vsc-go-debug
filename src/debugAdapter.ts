@@ -259,6 +259,10 @@ interface DiscardedBreakpoint {
 	reason: string;
 }
 
+interface  VariableInfo extends DebugProtocol.Variable {
+	variablesReferenceCount: number,
+}
+
 // Unrecovered panic and fatal throw breakpoint IDs taken from delve:
 // https://github.com/go-delve/delve/blob/f90134eb4db1c423e24fddfbc6eff41b288e6297/pkg/proc/breakpoints.go#L11-L21
 // UnrecoveredPanic is the name given to the unrecovered panic breakpoint.
@@ -1171,7 +1175,7 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 		if (this.stopOnEntry) {
 			this.emitStateChange('running', 'paused');
 			this.emitDebugEvent('stopped-on-entry');
-			this.emit('stopped', this.debugState);
+			this.emit('stopped', this.debugState, response.seq);
 			this.sendEvent(new StoppedEvent('entry', 1));
 			log('StoppedEvent("entry")');
 		} else if (!(await this.isDebuggeeRunning())) {
@@ -1658,7 +1662,7 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 				}
 				response.body = { stackFrames, totalFrames: locations.length };
 				this.sendResponse(response);
-				this.emit('refresh-stack-trace',  { stackFrames, totalFrames: locations.length });
+				this.emit('refresh-stack-trace',  { stackFrames, totalFrames: locations.length }, args.startFrame, response.seq);
 
 				log('StackTraceResponse');
 			}
@@ -1666,7 +1670,7 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 	}
 
 	protected scopesRequest(response: DebugProtocol.ScopesResponse, args: DebugProtocol.ScopesArguments): void {
-		log('ScopesRequest');
+		log('ScopesRequest'); 
 		// TODO(polinasok): this.stackFrameHandles.get should succeed as long as DA
 		// clients behaves well. Find the documentation around stack frame management
 		// and in case of a failure caused by misbehavior, consider to indicate it
@@ -1819,7 +1823,7 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 									scopes.push(
 										new Scope('Global', this.variableHandles.create(globalVariables), false)
 									);
-									this.emit('refresh-scopes', scopes );
+									this.emit('refresh-scopes', scopes, args.frameId);
 									this.sendResponse(response);
 									log('ScopesResponse');
 								}
@@ -1859,14 +1863,15 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 			variablesPromise = Promise.all(
 				vari.children.map((v, i) => {
 					return loadChildren(`*(*"${v.type}")(${v.addr})`, v).then(
-						(): DebugProtocol.Variable => {
-							const { result, variablesReference } = this.convertDebugVariableToProtocolVariable(v);
+						(): VariableInfo => {
+							const { result, variablesReference, variablesReferenceCount } = this.convertDebugVariableToProtocolVariable(v);
 							return {
 								name: '[' + i + ']',
 								value: result,
 								evaluateName: vari.fullyQualifiedName + '[' + i + ']',
 								variablesReference,
 								type: v.type,
+								variablesReferenceCount
 							};
 						}
 					);
@@ -1889,19 +1894,20 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 									value: mapValue.result,
 									evaluateName: vari.fullyQualifiedName + '[' + mapKey.result + ']',
 									variablesReference: mapValue.variablesReference,
-									type: vari.children[i + 1].type
-								} as DebugProtocol.Variable;
+									type: vari.children[i + 1].type,
+									variablesReferenceCount: mapValue.variablesReferenceCount
+								} as VariableInfo;
 							});
 						}
 					})
-					.filter((v): v is Promise<DebugProtocol.Variable> => !!v) // remove the null values created by combining keys and values
+					.filter((v): v is Promise<VariableInfo> => !!v) // remove the null values created by combining keys and values
 			);
 		} else {
 			variablesPromise = Promise.all(
 				vari.children.map((v) => {
 					return loadChildren(`*(*"${v.type}")(${v.addr})`, v).then(
-						(): DebugProtocol.Variable => {
-							const { result, variablesReference } = this.convertDebugVariableToProtocolVariable(v);
+						(): VariableInfo => {
+							const { result, variablesReference, variablesReferenceCount } = this.convertDebugVariableToProtocolVariable(v);
 
 							return {
 								name: v.name,
@@ -1909,6 +1915,7 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 								evaluateName: v.fullyQualifiedName,
 								variablesReference,
 								type: v.type,
+								variablesReferenceCount
 							};
 						}
 					);
@@ -1918,7 +1925,7 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 		variablesPromise.then((variables) => {
 			response.body = { variables };
 			this.sendResponse(response);
-			this.emit('refresh-variables', variables );
+			this.emit('refresh-variables',  variables, args, response.seq);
 			 
 			log('VariablesResponse', JSON.stringify(variables, null, ' '));
 		});
@@ -2509,27 +2516,31 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 		};
 	}
 
-	private convertDebugVariableToProtocolVariable(v: DebugVariable): { result: string; variablesReference: number } {
+	private convertDebugVariableToProtocolVariable(v: DebugVariable): { result: string; variablesReference: number, variablesReferenceCount: number } {
 		if (v.kind === GoReflectKind.UnsafePointer) {
 			return {
 				result: `unsafe.Pointer(0x${v.children[0].addr.toString(16)})`,
-				variablesReference: 0
+				variablesReference: 0,
+				variablesReferenceCount: 0
 			};
 		} else if (v.kind === GoReflectKind.Ptr) {
 			if (!v.children[0]) {
 				return {
 					result: 'unknown <' + v.type + '>',
-					variablesReference: 0
+					variablesReference: 0,
+					variablesReferenceCount: 0
 				};
 			} else if (v.children[0].addr === 0) {
 				return {
 					result: 'nil <' + v.type + '>',
-					variablesReference: 0
+					variablesReference: 0,
+					variablesReferenceCount: 0
 				};
 			} else if (v.children[0].type === 'void') {
 				return {
 					result: 'void',
-					variablesReference: 0
+					variablesReference: 0,
+					variablesReferenceCount: 0
 				};
 			} else {
 				if (v.children[0].children.length > 0) {
@@ -2541,35 +2552,41 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 				}
 				return {
 					result: `<${v.type}>(0x${v.children[0].addr.toString(16)})`,
-					variablesReference: v.children.length > 0 ? this.variableHandles.create(v) : 0
+					variablesReference: v.children.length > 0 ? this.variableHandles.create(v) : 0,
+					variablesReferenceCount: 0,
 				};
 			}
 		} else if (v.kind === GoReflectKind.Slice) {
 			if (v.base === 0) {
 				return {
 					result: 'nil <' + v.type + '>',
-					variablesReference: 0
+					variablesReference: 0,
+					variablesReferenceCount: 0
 				};
 			}
 			return {
 				result: '<' + v.type + '> (length: ' + v.len + ', cap: ' + v.cap + ')',
-				variablesReference: this.variableHandles.create(v)
+				variablesReference: this.variableHandles.create(v),
+				variablesReferenceCount: v.len,
 			};
 		} else if (v.kind === GoReflectKind.Map) {
 			if (v.base === 0) {
 				return {
 					result: 'nil <' + v.type + '>',
-					variablesReference: 0
+					variablesReference: 0,
+					variablesReferenceCount: 0
 				};
 			}
 			return {
 				result: '<' + v.type + '> (length: ' + v.len + ')',
-				variablesReference: this.variableHandles.create(v)
+				variablesReference: this.variableHandles.create(v),
+				variablesReferenceCount: v.len,
 			};
 		} else if (v.kind === GoReflectKind.Array) {
 			return {
 				result: '<' + v.type + '>',
-				variablesReference: this.variableHandles.create(v)
+				variablesReference: this.variableHandles.create(v),
+				variablesReferenceCount: v.len,
 			};
 		} else if (v.kind === GoReflectKind.String) {
 			let val = v.value;
@@ -2579,7 +2596,8 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 			}
 			return {
 				result: v.unreadable ? '<' + v.unreadable + '>' : '"' + val + '"',
-				variablesReference: 0
+				variablesReference: 0,
+				variablesReferenceCount: 0
 			};
 		} else if (v.kind === GoReflectKind.Interface) {
 			if (v.addr === 0) {
@@ -2587,7 +2605,8 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 				// happen in normal code but can happen if the variable is out of scope.
 				return {
 					result: 'nil',
-					variablesReference: 0
+					variablesReference: 0,
+					variablesReferenceCount: 0
 				};
 			}
 
@@ -2595,21 +2614,24 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 				// Shouldn't happen, but to be safe.
 				return {
 					result: 'nil',
-					variablesReference: 0
+					variablesReference: 0,
+					variablesReferenceCount: 0
 				};
 			}
 			const child = v.children[0];
 			if (child.kind === GoReflectKind.Invalid && child.addr === 0) {
 				return {
 					result: `nil <${v.type}>`,
-					variablesReference: 0
+					variablesReference: 0,
+					variablesReferenceCount: 0
 				};
 			}
 			return {
 				// TODO(hyangah): v.value will be useless. consider displaying more info from the child.
 				// https://github.com/go-delve/delve/blob/930fa3b/service/api/prettyprint.go#L106-L124
 				result: v.value || `<${v.type}(${child.type})>)`,
-				variablesReference: v.children?.length > 0 ? this.variableHandles.create(v) : 0
+				variablesReference: v.children?.length > 0 ? this.variableHandles.create(v) : 0,
+				variablesReferenceCount: v.children?.length
 			};
 		} else {
 			// Default case - structs
@@ -2621,7 +2643,8 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 			}
 			return {
 				result: v.value || '<' + v.type + '>',
-				variablesReference: v.children.length > 0 ? this.variableHandles.create(v) : 0
+				variablesReference: v.children.length > 0 ? this.variableHandles.create(v) : 0,
+				variablesReferenceCount: v.children.length,
 			};
 		}
 	}
@@ -2672,7 +2695,7 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 				this.emitStateChange('running', 'paused');
 				this.emitDebugEvent('stopped', { reason, goroutineId: this.debugState?.currentGoroutine.id });
 				if (this.debugState) {
-					this.emit('stopped', this.debugState);
+					this.emit('stopped', this.debugState.currentGoroutine.id);
 				}
 				const stoppedEvent = new StoppedEvent(reason, this.debugState?.currentGoroutine.id);
 				(<any>stoppedEvent.body).allThreadsStopped = true;

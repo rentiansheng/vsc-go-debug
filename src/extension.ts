@@ -177,7 +177,8 @@ class ConfigurationStateManager {
 			configName,
 			config.mode as 'debug' | 'run',
 			'running',
-			config.process
+			config.process,
+			config.debugSession,
 		);
 
 		if (config.process) {
@@ -1221,15 +1222,18 @@ class GoDebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory {
 			
 			DebugLogger.log(`Setting up event listeners...`, this.outputChannel);
 			if (typeof debugSession.on === 'function') {
-				debugSession.on("stopped", (event) => {
+				debugSession.on("stopped", (event, seqNo) => {
+					// 这个地方， 最好有一个 dlv  seq number id, 可以根据这个做区分
+
 					globalGoDebugOutputProvider?.addOutput(`Debug session stopped: ${JSON.stringify(event)}`, session.configuration?.name);	
 					DebugLogger.log(`Debug session stopped: ${JSON.stringify(event)}`, this.outputChannel);
+					globalGoDebugOutputProvider?.cleanDebugInfo(session.configuration?.name);
 				});
 				
 				const cfgName = session.configuration?.name;
 				if (cfgName) {
-					debugSession.on("refresh-variables", (variables) => {
-						globalGoDebugOutputProvider?.addVariables(variables, cfgName);
+					debugSession.on("refresh-variables", (variables, args) => {
+						globalGoDebugOutputProvider?.addVariables(variables, args, cfgName);
 					});
 					debugSession.on("refresh-stack-trace", (stackTrace) => {
 						globalGoDebugOutputProvider?.addStack(stackTrace, cfgName);
