@@ -14,7 +14,7 @@ import * as vscode from 'vscode';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import { existsSync, lstatSync } from 'fs';
-import * as glob from 'glob';
+import { globSync } from 'glob';
 import { Client, RPCConnection } from 'json-rpc2';
 import * as os from 'os';
 import * as path from 'path';
@@ -1307,11 +1307,11 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 
 		// If we cannot find the path in packages, most likely it will be in the current directory.
 		const fileName = getBaseName(remotePath);
-		const globSync = glob.sync(fileName, {
+		const globResults = globSync(fileName, {
 			matchBase: true,
 			cwd: this.delve?.program
 		});
-		const bestMatchingLocalPath = this.findPathWithBestMatchingSuffix(remotePath, globSync);
+		const bestMatchingLocalPath = this.findPathWithBestMatchingSuffix(remotePath, globResults);
 		if (bestMatchingLocalPath) {
 			const fullLocalPath = path.join(this.delve?.program ?? '', bestMatchingLocalPath);
 			this.remoteToLocalPathMapping.set(remotePath, fullLocalPath);

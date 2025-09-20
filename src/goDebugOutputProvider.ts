@@ -193,10 +193,15 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
 
         webviewView.webview.options = {
             enableScripts: true,
-            localResourceRoots: [this._extensionUri],
+            localResourceRoots: [
+                this._extensionUri,
+                vscode.Uri.joinPath(this._extensionUri, 'out'),
+                vscode.Uri.joinPath(this._extensionUri, 'src', 'webview')
+            ],
         };
 
-        webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
+        // Load HTML from index.html file
+        webviewView.webview.html = this._getWebviewContent(webviewView.webview);
 
         // Update all toolbar states after content is loaded
         setTimeout(() => {
@@ -1058,6 +1063,328 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    private _getWebviewContent(webview: vscode.Webview): string {
+        try {
+            // Get the webview JS and CSS URIs from dist directory
+            const webviewJsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'dist', 'webview.js'));
+            const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'node_modules', '@vscode', 'codicons', 'dist', 'codicon.css'));
+            
+            // Generate nonce for security
+            const nonce = this._getNonce();
+            
+            // Create HTML content with comprehensive styles
+            const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https:; script-src ${webview.cspSource} 'nonce-${nonce}'; style-src ${webview.cspSource} 'unsafe-inline';">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Go Debug Output</title>
+    <link href="${codiconsUri}" rel="stylesheet" />
+    <style>
+        /* VS Code theme variables and base styles */
+        :root {
+            --vscode-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+            --vscode-font-size: 12px;
+            --vscode-editor-font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            overflow: hidden;
+            font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif);
+            font-size: var(--vscode-font-size, 12px);
+            color: var(--vscode-foreground);
+            background-color: var(--vscode-editor-background);
+        }
+        
+        #root {
+            height: 100vh;
+            width: 100vw;
+        }
+        
+        .loading {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .app-container {
+            display: flex;
+            height: 100vh;
+            flex-direction: column;
+            font-family: var(--vscode-font-family);
+            font-size: var(--vscode-font-size);
+            color: var(--vscode-foreground);
+            background-color: var(--vscode-editor-background);
+        }
+
+        /* Tabs Header */
+        .tabs-header {
+            display: flex;
+            border-bottom: 1px solid var(--vscode-panel-border);
+            background-color: var(--vscode-tab-inactiveBackground);
+            overflow-x: auto;
+            min-height: 35px;
+        }
+
+        .tab {
+            display: flex;
+            align-items: center;
+            padding: 8px 12px;
+            background-color: var(--vscode-tab-inactiveBackground);
+            color: var(--vscode-tab-inactiveForeground);
+            border-right: 1px solid var(--vscode-panel-border);
+            cursor: pointer;
+            white-space: nowrap;
+            font-size: 12px;
+            position: relative;
+        }
+
+        .tab.active {
+            background-color: var(--vscode-tab-activeBackground);
+            color: var(--vscode-tab-activeForeground);
+        }
+
+        .tab:hover {
+            background-color: var(--vscode-tab-hoverBackground);
+        }
+
+        .tab-close {
+            margin-left: 8px;
+            cursor: pointer;
+            opacity: 0.7;
+        }
+
+        .tab-close:hover {
+            opacity: 1;
+        }
+
+        /* Toolbar styles */
+        .toolbar {
+            display: flex;
+            align-items: center;
+            padding: 4px 8px;
+            background-color: var(--vscode-toolbar-background);
+            border-bottom: 1px solid var(--vscode-panel-border);
+            gap: 4px;
+        }
+
+        .toolbar-button {
+            background: none;
+            border: none;
+            color: var(--vscode-foreground);
+            padding: 4px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .toolbar-button:hover {
+            background-color: var(--vscode-toolbar-hoverBackground);
+        }
+
+        .toolbar-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Tab content */
+        .tab-content {
+            flex: 1;
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .tab-content.active {
+            display: flex;
+        }
+
+        /* Console styles */
+        .console {
+            flex: 1;
+            font-family: var(--vscode-editor-font-family);
+            font-size: 12px;
+            padding: 8px;
+            overflow-y: auto;
+            background-color: var(--vscode-editor-background);
+        }
+
+        .console-line {
+            margin-bottom: 2px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        /* Variables panel styles */
+        .variables-panel {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px;
+        }
+
+        .variable-tree {
+            font-family: var(--vscode-editor-font-family);
+            font-size: 12px;
+        }
+
+        .variable-item {
+            padding: 2px 0;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+        }
+
+        .variable-item:hover {
+            background-color: var(--vscode-list-hoverBackground);
+        }
+
+        .variable-name {
+            font-weight: bold;
+            margin-right: 8px;
+        }
+
+        .variable-type {
+            color: var(--vscode-symbolIcon-typeParameterForeground);
+            margin-right: 8px;
+            font-style: italic;
+        }
+
+        .variable-value {
+            color: var(--vscode-debugTokenExpression-string);
+        }
+
+        /* Resizable layout styles */
+        .resizable-container {
+            display: flex;
+            height: 100%;
+            flex: 1;
+        }
+
+        .stack-section {
+            flex: 0 0 33.33%;
+            min-width: 200px;
+            max-width: 50%;
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid var(--vscode-panel-border);
+            overflow: hidden;
+        }
+
+        .variables-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .resize-handle {
+            width: 4px;
+            background-color: var(--vscode-panel-border);
+            cursor: col-resize;
+            position: relative;
+            flex-shrink: 0;
+        }
+
+        .resize-handle:hover {
+            background-color: var(--vscode-focusBorder);
+        }
+
+        .resize-handle:active {
+            background-color: var(--vscode-focusBorder);
+        }
+
+        .section-header {
+            padding: 8px 12px;
+            background-color: var(--vscode-sideBar-background);
+            border-bottom: 1px solid var(--vscode-panel-border);
+            font-weight: bold;
+            font-size: 11px;
+            text-transform: uppercase;
+            color: var(--vscode-foreground);
+        }
+
+        .stack-list, .variables-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 4px;
+        }
+
+        .stack-item {
+            padding: 4px 8px;
+            cursor: pointer;
+            border-radius: 3px;
+            margin-bottom: 2px;
+        }
+
+        .stack-item:hover {
+            background-color: var(--vscode-list-hoverBackground);
+        }
+
+        .stack-item.current {
+            background-color: var(--vscode-list-activeSelectionBackground);
+            color: var(--vscode-list-activeSelectionForeground);
+        }
+
+        .frame-name {
+            font-weight: bold;
+            margin-bottom: 2px;
+        }
+
+        .frame-location {
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground);
+        }
+
+        .variables-view {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .empty-state {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--vscode-descriptionForeground);
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div id="root">
+        <div class="loading">Loading Go Debug Output...</div>
+    </div>
+    <script nonce="${nonce}" src="${webviewJsUri}"></script>
+</body>
+</html>`;
+            
+            return html;
+        } catch (error) {
+            console.error('[GoDebugOutputProvider] Error loading webview content:', error);
+            // Fallback to the original HTML generation method
+            return this._getHtmlForWebview(webview);
+        }
+    }
+
+    private _getNonce(): string {
+        let text = '';
+        const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        for (let i = 0; i < 32; i++) {
+            text += possible.charAt(Math.floor(Math.random() * possible.length));
+        }
+        return text;
+    }
+
     private _getHtmlForWebview(webview: vscode.Webview) {
         // Get path to codicons
         const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'node_modules', '@vscode', 'codicons', 'dist', 'codicon.css'));
@@ -1227,7 +1554,15 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         .toolbar-buttons {
             display: flex;
             align-items: center;
+            width: 100%;
             gap: 4px;
+        }
+        
+        .view-tabs {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-left: auto;
         }
         
         .toolbar-button {
@@ -1238,7 +1573,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             cursor: pointer;
             border-radius: 2px;
             font-size: 11px;
-            display: flex;
+            margin-left: 5px;
             align-items: center;
             gap: 4px;
             min-width: 24px;

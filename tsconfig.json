@@ -21,6 +21,7 @@
 	"exclude": [
 		"gpt5code/**/*",
 		"node_modules",
-		"out"
+		"out",
+		"src/webview/**/*"
 	]
 }
