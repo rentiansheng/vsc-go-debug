@@ -10,6 +10,7 @@ export interface Variable {
     attributes?: string[];
     visibility?: string;
   };
+  addr?: number;
 }
 
 export interface StackFrame {

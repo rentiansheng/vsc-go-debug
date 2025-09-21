@@ -548,6 +548,7 @@
     "@vscode/codicons": "^0.0.40",
     "@vscode/debugadapter": "^1.68.0",
     "@vscode/debugprotocol": "^1.68.0",
+    "antd": "^5.27.4",
     "glob": "^11.0.3",
     "json-rpc2": "^2.0.0",
     "react": "^19.1.1",

@@ -1358,6 +1358,79 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             color: var(--vscode-descriptionForeground);
             font-style: italic;
         }
+
+        /* Ant Design Tree customization for VS Code theme */
+        .variable-tree-container {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .variable-tree-node {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-family: var(--vscode-editor-font-family);
+            font-size: 12px;
+        }
+
+        .variable-tree-node .variable-icon {
+            font-size: 14px;
+            min-width: 16px;
+        }
+
+        .variable-tree-node .variable-name {
+            font-weight: bold;
+            color: var(--vscode-foreground);
+        }
+
+        .variable-tree-node .variable-type {
+            font-style: italic;
+            font-size: 11px;
+        }
+
+        .variable-tree-node .variable-value {
+            color: var(--vscode-debugTokenExpression-string);
+            margin-left: 4px;
+        }
+
+        .variable-tree-node .variable-preview {
+            color: var(--vscode-descriptionForeground);
+            margin-left: 4px;
+            font-style: italic;
+        }
+
+        /* Override Ant Design Tree styles for VS Code */
+        .ant-tree {
+            background: transparent !important;
+            color: var(--vscode-foreground) !important;
+        }
+
+        .ant-tree .ant-tree-node-content-wrapper {
+            background: transparent !important;
+            color: var(--vscode-foreground) !important;
+            border-radius: 3px;
+        }
+
+        .ant-tree .ant-tree-node-content-wrapper:hover {
+            background-color: var(--vscode-list-hoverBackground) !important;
+        }
+
+        .ant-tree .ant-tree-node-content-wrapper.ant-tree-node-selected {
+            background-color: var(--vscode-list-activeSelectionBackground) !important;
+            color: var(--vscode-list-activeSelectionForeground) !important;
+        }
+
+        .ant-tree .ant-tree-switcher {
+            color: var(--vscode-foreground) !important;
+        }
+
+        .ant-tree .ant-tree-switcher-icon {
+            color: var(--vscode-foreground) !important;
+        }
+
+        .ant-tree .ant-tree-indent-unit {
+            width: 16px !important;
+        }
     </style>
 </head>
 <body>
@@ -1953,7 +2026,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                             <span class="codicon codicon-debug-restart"></span>
                             <span class="codicon codicon-bug"></span>
                         </button>
-                        <div class="toolbar-separator"></div>
+                        <span class="toolbar-separator"></span>
                         <button class="toolbar-button" data-action="continue" title="Continue" disabled>
                             <span class="codicon codicon-debug-continue"></span>
                         </button>
@@ -1966,7 +2039,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                         <button class="toolbar-button" data-action="stepOut" title="Step Out" disabled>
                             <span class="codicon codicon-debug-step-out"></span>
                         </button>
-                        <div class="toolbar-separator"></div>
+                        <span class="toolbar-separator"></span>
                         <div class="view-tabs">
                             <span class="view-tab" data-view="variables" onclick="switchView('\${configName}', 'variables')">Variables And Stack</span>
                             <span class="view-tab active" data-view="console" onclick="switchView('\${configName}', 'console')">Console</span>

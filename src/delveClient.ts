@@ -124,11 +124,8 @@ export class DelveClient   {
     
     // 检查是否为 Go 二进制文件（基本检查）
     try {
-      const fd = fs.openSync(binaryPath, 'r');
-      const buffer = Buffer.alloc(1024);
-      fs.readSync(fd, buffer, 0, 1024, 0);
-      fs.closeSync(fd);
-      const content = buffer.toString('binary');
+      const data = fs.readFileSync(binaryPath);
+      const content = data.subarray(0, Math.min(1024, data.length)).toString('binary');
       
       // 检查是否包含 Go 运行时信息
       if (!content.includes('runtime.') && !content.includes('go.') && !content.includes('Go ')) {

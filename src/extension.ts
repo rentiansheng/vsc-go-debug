@@ -381,6 +381,15 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 
 	// TODO: 如果已经展示，无需在 show
 	//outputChannel.show();
+	// let cfgEnv = [];
+	// if(configItem.go_path){
+	// 	cfgEnv.push(`GOPATH=${configItem.go_path}`);
+	// }
+	// if(configItem.go_root){
+	// 	cfgEnv.push(`GOROOT=${configItem.go_root}`);
+	// }
+	// // 合并系统环境变量
+	// const env = { ...process.env };
 
 
 
@@ -1476,6 +1485,22 @@ async function executeCompileAndDlvDebug(
 // Helper function to get or create a dedicated terminal for a configuration
 
 
+
+function getGoBinaryPath(): string {
+	let goPath = 'go';
+	if (process.platform === 'win32') {
+		goPath = 'go.exe';
+	}
+	if (process.env.GOROOT) {
+		const goBinary = path.join(process.env.GOROOT, 'bin', goPath);
+		if (fs.existsSync(goBinary)) {
+			return goBinary;
+		}
+	}
+	return goPath;
+ 
+}
+
 async function build(
 	workspaceFolder: vscode.WorkspaceFolder,
 	absoluteBinaryPath: string,
@@ -1565,8 +1590,8 @@ async function build(
 			}, 100);
 		});
 	}
-
-	const buildProcess = cp.spawn('go', buildArgs, {
+	const goBinary = getGoBinaryPath();
+	const buildProcess = cp.spawn(goBinary, buildArgs, {
 		cwd: sourceDir,
 		stdio: ['pipe', 'pipe', 'pipe']
 	});

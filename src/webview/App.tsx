@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import 'antd/dist/reset.css'; // Import Ant Design styles
 import { TabData, VSCodeAPI, Variable, StackFrame } from './types';
 // import './styles.css'; // Temporarily disabled - using inline styles in HTML
 
@@ -291,7 +292,7 @@ const App: React.FC = () => {
                   {/* Debug controls - only show when debugging */}
                   {activeTabData.sessionInfo?.action === 'debug' && activeTabData.sessionInfo?.state === 'running' && (
                     <>
-                      <div className="toolbar-separator"></div>
+                      <span className="toolbar-separator"></span>
                       <button 
                         className="toolbar-button"
                         onClick={() => handleToolbarAction('continue', activeTabData.name)}
@@ -318,11 +319,11 @@ const App: React.FC = () => {
                       </button>
                     </>
                   )}
-                  
-                  <div className="toolbar-separator"></div>
-                  
+
+                  <span className="toolbar-separator"></span>
+
                   {/* View switcher */}
-                  <div className="view-tabs">
+                  <span className="view-tabs">
                     <button
                       className={`view-tab ${currentView === 'console' ? 'active' : ''}`}
                       onClick={() => handleViewSwitch('console')}
@@ -335,7 +336,7 @@ const App: React.FC = () => {
                     >
                       Variables & Stack
                     </button>
-                  </div>
+                  </span>
                 </div>
               </div>
               

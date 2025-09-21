@@ -93,7 +93,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({
           visible={isRunning}
         />
         
-        <div className="toolbar-separator"></div>
+        <span className="toolbar-separator"></span>
         
         <ToolbarButton
           action="continue"

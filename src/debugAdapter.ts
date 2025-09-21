@@ -261,6 +261,7 @@ interface DiscardedBreakpoint {
 
 interface  VariableInfo extends DebugProtocol.Variable {
 	variablesReferenceCount: number,
+	addr: number
 }
 
 // Unrecovered panic and fatal throw breakpoint IDs taken from delve:
@@ -1871,7 +1872,8 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 								evaluateName: vari.fullyQualifiedName + '[' + i + ']',
 								variablesReference,
 								type: v.type,
-								variablesReferenceCount
+								variablesReferenceCount,
+								addr: v.addr,
 							};
 						}
 					);
@@ -1895,7 +1897,8 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 									evaluateName: vari.fullyQualifiedName + '[' + mapKey.result + ']',
 									variablesReference: mapValue.variablesReference,
 									type: vari.children[i + 1].type,
-									variablesReferenceCount: mapValue.variablesReferenceCount
+									variablesReferenceCount: mapValue.variablesReferenceCount,
+									addr: vari.children[i + 1].addr,
 								} as VariableInfo;
 							});
 						}
@@ -1915,7 +1918,8 @@ export class GoDebugSession extends LoggingDebugSession implements EventEmitterM
 								evaluateName: v.fullyQualifiedName,
 								variablesReference,
 								type: v.type,
-								variablesReferenceCount
+								variablesReferenceCount,
+								addr: v.addr,
 							};
 						}
 					);
