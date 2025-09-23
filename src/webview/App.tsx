@@ -10,6 +10,7 @@ const App: React.FC = () => {
   const [tabs, setTabs] = useState<Map<string, TabData>>(new Map());
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [currentView, setCurrentView] = useState<'console' | 'variables'>('console');
+  const [variablesVersion, setVariablesVersion] = useState<number>(0); // 用于强制 VariableTree 刷新
   const [vscode] = useState<VSCodeAPI>(() => {
     if (typeof window !== 'undefined' && window.acquireVsCodeApi) {
       return window.acquireVsCodeApi();
@@ -25,7 +26,6 @@ const App: React.FC = () => {
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       const message = event.data;
-      console.log('Received message:', message);
       
       switch (message.command) {
         case 'createTab':
@@ -95,6 +95,7 @@ const App: React.FC = () => {
       if (!newTabs.has(tabName)) {
         newTabs.set(tabName, {
           name: tabName,
+          title: tabName,
           active: false,
           logs: [],
           variables: [],
@@ -137,8 +138,7 @@ const App: React.FC = () => {
           ...variable,
           children: []
         }));
-        console.log('Updated variables for tab', tabName, 'args', args, 'old variables', variables);
-
+ 
         
         // 获取的是子元素， 需要合并到父元素中
         if (args && args.variablesReference) {
@@ -167,18 +167,20 @@ const App: React.FC = () => {
           if (!mergeVariables(variables)) {
             variables = variableTree;
           }
-          
-          
         } else {
           variables = variableTree;
         }
-        console.log('Updated variables for tab', tabName, 'args', 
-          args, 'old variables', variables);
+        console.log('Updated variables for tab: set1', tabName, 'args', 
+          args, 'newVariables', newVariables, 'variables', variables);
 
         newTabs.set(tabName, { ...tab, variables });
+        console.log('Updated variables for tab: set2 - Tab updated with new variables:', variables.length, 'items');
       }
       return newTabs;
     });
+    
+    // 强制 VariableTree 组件刷新
+    setVariablesVersion(prev => prev + 1);
   }, []);
 
   const updateTabStack = useCallback((tabName: string, stack: { stackFrames: StackFrame[], totalFrames: number }) => {
@@ -208,7 +210,7 @@ const App: React.FC = () => {
       const newTabs = new Map(prev);
       const tab = newTabs.get(tabName);
       if (tab) {
-        newTabs.set(tabName, { ...tab, name: newTitle });
+        newTabs.set(tabName, { ...tab, title: newTitle });
       }
       return newTabs;
     });
@@ -292,7 +294,7 @@ const App: React.FC = () => {
             className={`tab ${activeTab === tab.name ? 'active' : ''}`}
             onClick={() => setActiveTab(tab.name)}
           >
-            <span className="tab-title">{tab.name}</span>
+            <span className="tab-title">{tab.title}</span>
             <button
               className="tab-close"
               onClick={(e) => {
@@ -436,6 +438,7 @@ const App: React.FC = () => {
                         <div className="variables-list">
                            {/* 使用 VariableTree 组件展示变量树 */}
                            <VariableTree  
+                             key={`variables-${activeTabData.name}-v${variablesVersion}`}
                              variables={activeTabData.variables}
                              tabName={activeTabData.name}
                              vscode={vscode}

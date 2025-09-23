@@ -53,6 +53,7 @@ export interface SessionInfo {
 
 export interface TabData {
   name: string;
+  title: string;
   active: boolean;
   logs: string[];
   variables: VariableTreeNode[];

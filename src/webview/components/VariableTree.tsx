@@ -1,8 +1,9 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { Tree } from 'antd';
 import type { DataNode } from 'antd/es/tree';
-import { Variable, VSCodeAPI,VariableTreeNode } from '../types';
+import { Variable, VSCodeAPI, VariableTreeNode } from '../types';
 import { DebugProtocol } from 'vscode-debugprotocol';
+import { start } from 'repl';
 
 interface VariableTreeProps {
   variables: VariableTreeNode[];
@@ -15,9 +16,7 @@ interface ExtendedDataNode extends DataNode {
   variableData?: VariableTreeNode;
   variablesReference?: number;
   variablesReferenceCount?: number;
-
 }
-
 
 export const VariableTree: React.FC<VariableTreeProps> = ({
   variables,
@@ -25,27 +24,12 @@ export const VariableTree: React.FC<VariableTreeProps> = ({
   vscode,
   level = 0
 }) => {
+  
+  console.log(`VariableTree: Component rendered for tab ${tabName} with ${variables.length} variables:`, variables);
+  
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
   const [loadedKeys, setLoadedKeys] = useState<React.Key[]>([]);
-  const [loadingKeys, setLoadingKeys] = useState<React.Key[]>([]);
   const [treeData, setTreeData] = useState<ExtendedDataNode[]>([]);
-
-  // const getVariableIcon = useCallback((variable: Variable) => {
-  //   const hasChildren = variable.variablesReference && variable.variablesReference > 0;
-
-  //   if (hasChildren) {
-  //     return '📁';
-  //   }
-
-  //   // Based on variable type or presentation hint
-  //   if (variable.type?.includes('[]')) return '📋';
-  //   if (variable.type?.includes('map')) return '🗂️';
-  //   if (variable.type?.includes('struct')) return '📦';
-  //   if (variable.type?.includes('pointer')) return '👉';
-  //   if (variable.type?.includes('interface')) return '🔌';
-  //   if (variable.type?.includes('func')) return '⚡';
-  //   return '📄';
-  // }, []);
 
   const getTypeColor = useCallback((type: string) => {
     if (type?.includes('string')) return '#ce9178';
@@ -55,127 +39,229 @@ export const VariableTree: React.FC<VariableTreeProps> = ({
     return '#9cdcfe';
   }, []);
 
-
-
-  function getVariableKey(variable: Variable): string {
+  const getVariableKey = useCallback((variable: Variable): string => {
     return `addr:${variable.addr}`;
-  }
+  }, []);
 
+  // 优化的树数据转换函数，使用 useMemo 缓存结果
+  const convertVariableToTreeData = useCallback((variable: VariableTreeNode): ExtendedDataNode => {
+    const hasChildren = variable.variablesReference && variable.variablesReference > 0;
+    const hasActualChildren = variable.children && variable.children.length > 0;
+    const key = getVariableKey(variable);
+    
 
-  function convertVariableToTreeData(variable: VariableTreeNode): ExtendedDataNode {
-      const hasChildren = variable.variablesReference && variable.variablesReference > 0;
-      const key = getVariableKey(variable);
-      console.log('convertVariablesToTreeData:', key, variable.name, variable.variablesReference, "xxx", variables.length, treeData.length);
-      const title = (
-        <span className="variable-tree-node">
-          <span className="variable-icon" style={{ display: 'none' }}>{/*getVariableIcon(variable)*/}</span>
-          <span className="variable-name">{variable.name}</span>
-          <span
-            className="variable-type"
-            style={{ color: getTypeColor(variable.type) }}
-          >
-            ({variable.type})
-          </span>
-          {!hasChildren && (
-            <span className="variable-value">= {variable.value}</span>
-          )}
+    const title = (
+      <span className="variable-tree-node">
+        <span className="variable-name">{variable.name}</span>
+        <span
+          className="variable-type"
+          style={{ color: getTypeColor(variable.type) }}
+        >
+          ({variable.type})
         </span>
-      );
-      
-      let children: ExtendedDataNode[] = [];  
-      if (hasChildren && variable.children) {
-        children = variable.children.map(childVar => convertVariableToTreeData(childVar));
+        {!hasChildren && (
+          <span className="variable-value">= {variable.value}</span>
+        )}
+      </span>
+    );
+    
+    let children: ExtendedDataNode[] | undefined = undefined;
+    
+    // 如果有实际的子节点数据，递归转换
+    if (hasActualChildren) {
+      console.log(`VariableTree Converting ${variable.children!.length} children for ${variable.name}`);
+      children = variable.children!.map(childVar => convertVariableToTreeData(childVar));
+    } 
+    // 如果有 variablesReference 但没有子节点数据，设置为空数组启用懒加载
+    else if (hasChildren) {
+      children = [];
+    }
+    
+    return {
+      key,
+      title,
+      isLeaf: !hasChildren,
+      variablesReference: variable.variablesReference || 0,
+      variablesReferenceCount: variable.variablesReferenceCount || 0,
+      variableData: variable,
+      children: children,
+    };
+  }, [getVariableKey, getTypeColor]);
+
+  // 使用 useMemo 优化树数据转换，只在 variables 变化时重新计算
+  const convertedTreeData = useMemo(() => {
+    console.log('VariableTree converted tree', treeData, 'v', variables);
+
+    if (!variables || variables.length === 0) {
+      return [];
+    }
+
+    const startTime = performance.now();
+    
+    const treeNodes = variables.map(variable => convertVariableToTreeData(variable));
+    
+    const endTime = performance.now();
+    
+    return treeNodes;
+  }, [variables, convertVariableToTreeData]);
+
+  // 智能状态管理：当 variables 变化时，完全重新构建树并保持展开状态
+  useEffect(() => {
+
+   
+    console.log('VariableTree Current expanded variables:', treeData, "xxx", Array.from(treeData), "v", variables);
+    
+    // 保存当前展开的变量名
+    const currentExpandedVariableNames = new Set(
+      treeData
+        .filter(node => expandedKeys.includes(node.key))
+        .map(node => node.variableData?.name)
+        .filter(Boolean)
+    );
+    
+
+    // 更新树数据
+    setTreeData(convertedTreeData);
+    console.log('VariableTree Current expanded variables:', treeData, "xxx", Array.from(treeData), "v", variables);
+
+    // 尝试恢复展开状态
+    if (currentExpandedVariableNames.size > 0) {
+      // 等待下一个渲染周期再恢复展开状态
+      setTimeout(() => {
+        const newExpandedKeys = convertedTreeData
+          .filter(node => node.variableData?.name && currentExpandedVariableNames.has(node.variableData.name))
+          .map(node => node.key);
+        
+        if (newExpandedKeys.length > 0) {
+          console.log('Restoring expanded keys:', newExpandedKeys);
+          setExpandedKeys(newExpandedKeys);
+        }
+      }, 0);
+    }
+
+    // 清理已加载状态，因为变量引用可能已经改变
+    setLoadedKeys([]);
+    
+    console.log('Tree data updated, new tree:', convertedTreeData);
+  }, [convertedTreeData]);
+
+  // 监听树数据变化，强制重新渲染
+  useEffect(() => {
+     console.log('VariableTree use effect', treeData, 'nodes');
+  }, [treeData]);
+
+  const onLoadData = useCallback(({ key, variablesReference, variableData }: ExtendedDataNode): Promise<void> => {
+    
+    return new Promise((resolve) => {
+          console.log('VariableTree onload data promise', treeData, 'nodes');
+
+      if (!variablesReference || loadedKeys.includes(key)) {
+        resolve();
+        return;
       }
 
-      return {
-        key,
-        title,
-        isLeaf: !hasChildren,
-        variablesReference: variable.variablesReference || 0,
-        variablesReferenceCount: variable.variablesReferenceCount || 0,
-        variableData: variable,
-        children: children,
+      // 检查是否已经有子节点数据
+      if (variableData?.children && variableData.children.length > 0) {
+        setLoadedKeys(prev => [...prev, key]);
+        resolve();
+        return;
+      }
+
+      
+      const handleMessage = (event: MessageEvent) => {
+        const message = event.data;
+        if (message.command === 'variables' && 
+            message.tabName === tabName &&
+            message.arguments?.variablesReference === variablesReference) {
+                    
+          // 递归更新树节点
+          const updateTreeData = (nodes: ExtendedDataNode[]): ExtendedDataNode[] => {
+            return nodes.map(node => {
+              if (node.key === key) {
+                const childData = message.variables?.map((child: VariableTreeNode) => 
+                  convertVariableToTreeData(child)
+                ) || [];
+                return {
+                  ...node,
+                  children: childData
+                };
+              }
+              if (node.children) {
+                return {
+                  ...node,
+                  children: updateTreeData(node.children)
+                };
+              }
+              return node;
+            });
+          };
+
+          setTreeData(prevData => {
+            const updatedData = updateTreeData(prevData);
+            return updatedData;
+          });
+          
+          setLoadedKeys(prev => [...prev, key]);
+          window.removeEventListener('message', handleMessage);
+          resolve();
+        }
       };
-  }
 
+      window.addEventListener('message', handleMessage);
 
-  const convertVariablesToTreeData = useCallback((vars: Variable[]): ExtendedDataNode[] => {
-   
+      // 发送请求获取变量
+      vscode.postMessage({
+        command: 'get_variables',
+        tabName: tabName,
+        variablesReference: variablesReference
+      });
 
-
-    return vars.map((variable, index) => {
-
-
-      const hasChildren = variable.variablesReference && variable.variablesReference > 0;
-      const key = getVariableKey(variable);
-      console.log('convertVariablesToTreeData:', key, variable.name, variable.variablesReference, "xxx", variables.length, treeData.length);
-      const title = (
-        <span className="variable-tree-node">
-          <span className="variable-icon" style={{ display: 'none' }}>{/*getVariableIcon(variable)*/}</span>
-          <span className="variable-name">{variable.name}</span>
-          <span
-            className="variable-type"
-            style={{ color: getTypeColor(variable.type) }}
-          >
-            ({variable.type})
-          </span>
-          {!hasChildren && (
-            <span className="variable-value">= {variable.value}</span>
-          )}
-        </span>
-      );
-
-      return {
-        key,
-        title,
-        isLeaf: !hasChildren,
-        variablesReference: variable.variablesReference,
-        variableData: variable,
-        children: hasChildren ? [] : undefined,
-      };
+      // 设置超时处理
+      setTimeout(() => {
+        window.removeEventListener('message', handleMessage);
+        resolve();
+      }, 5000);
     });
-  }, [/*getVariableIcon,*/ getTypeColor]);
+  }, [tabName, vscode, loadedKeys, convertVariableToTreeData]);
 
-  // Initialize tree data when variables change
-  useEffect(() => {
-    // 当 variables 发生变化时，重置所有状态并重新初始化树数据
-    setTreeData(convertVariablesToTreeData(variables));
-    
-    // 可选：重置展开和加载状态（取决于是否希望保持用户的展开状态）
-    // setExpandedKeys([]);
-    // setLoadedKeys([]);
-    // setLoadingKeys([]);
-    
-    console.log('Variables updated, tree data refreshed:', variables.length, 'variables');
-  }, [variables, convertVariablesToTreeData]);
-
- 
-
-  const onExpand = (newExpandedKeys: React.Key[]) => {
+  const onExpand = useCallback((newExpandedKeys: React.Key[], { expanded, node }: any) => {
+    if (expanded) {
+      if(node.variablesReference && node.variablesReferenceCount >  node.children?.length) {
+          // 发送请求获取变量
+          vscode.postMessage({
+            command: 'get_variables',
+            tabName: tabName,
+            variablesReference: node.variablesReference,
+          });
+      }
+    } 
     setExpandedKeys(newExpandedKeys);
-  };
+  }, []);
 
+  // 空状态处理
   if (!variables || variables.length === 0) {
     return (
       <div className="empty-state">
-        No variables available
+        <span>No variables available</span>
       </div>
     );
   }
 
   return (
-    <div className="variable-tree-container">
+    <div className="variable-tree-container" data-tab={tabName}>
       <Tree
-
+        key={`tree-${tabName}-${variables.length}-${JSON.stringify(variables.map(v => v.name + v.variablesReference))}`}
         treeData={treeData}
-         expandedKeys={expandedKeys}
+        loadData={onLoadData}
+        expandedKeys={expandedKeys}
         onExpand={onExpand}
         loadedKeys={loadedKeys}
         showIcon={true}
         blockNode={true}
         className="variable-tree"
+        height={400}
+        virtual={true} // 启用虚拟滚动以提高大量数据的性能
       />
-
     </div>
   );
 };

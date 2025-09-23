@@ -50,6 +50,9 @@ export class GlobalStateManager {
      */
     public setState(configName: string, action: 'debug' | 'run', state: 'running' | 'stopped' | 'starting' | 'stopping', process?: any, session?: vscode.DebugSession): void {
         const oldState = this.stateMap.get(configName);
+        if (!session && oldState && oldState.session && state !== 'stopped' && state !== 'stopping') {
+            session = oldState?.session;
+        }
         const newState: ConfigState = {
             name: configName,
             action,

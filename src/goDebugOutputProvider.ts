@@ -779,19 +779,12 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     public setSessionInfo(tabName: string, type: 'debug' | 'run', status: 'running' | 'stopped', session?: vscode.DebugSession) {
         // 兼容旧接口，转换为新的状态管理
         const state: 'running' | 'stopped' = status === 'running' ? 'running' : 'stopped';
-        this.globalStateManager.setState(tabName, type, state, session);
+        this.globalStateManager.setState(tabName, type, state,null, session);
     }
 
     private updateToolbarState(tabName: string) {
         const configState = this.globalStateManager.getState(tabName);
         if (this._view) {
-            console.log(`[Go Debug Output] Updating toolbar state for ${tabName}:`, configState);
-            console.log(`[Go Debug Output] Config state details:`, {
-                hasState: !!configState,
-                action: configState?.action,
-                state: configState?.state,
-                process: !!configState?.process
-            });
 
             this._view.webview.postMessage({
                 command: 'updateToolbar',
