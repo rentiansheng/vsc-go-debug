@@ -421,3 +421,13 @@
   background-color: var(--vscode-button-secondaryHoverBackground);
 }
  
+.resize-handle {
+  width: 5px;
+  cursor: ew-resize;
+  position: absolute;
+  height: auto;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  z-index: 10;
+}

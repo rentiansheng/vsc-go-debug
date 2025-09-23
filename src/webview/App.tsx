@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import 'antd/dist/reset.css'; // Import Ant Design styles
-import { TabData, VSCodeAPI, Variable, StackFrame } from './types';
+import { TabData, VSCodeAPI, Variable, StackFrame, VariableTreeNode } from './types';
+import { VariableTree } from './components/VariableTree';
+import { DebugProtocol } from 'vscode-debugprotocol';
+
 // import './styles.css'; // Temporarily disabled - using inline styles in HTML
 
 const App: React.FC = () => {
@@ -38,8 +41,9 @@ const App: React.FC = () => {
           break;
           
         case 'updateVariables':
+          console.log('Updating variables for tab', message.tabName, message.variables);
           if (message.tabName && message.variables) {
-            updateTabVariables(message.tabName, message.variables);
+            updateTabVariables(message.tabName, message.variables, message.args );
           }
           break;
           
@@ -120,11 +124,57 @@ const App: React.FC = () => {
     });
   }, []);
 
-  const updateTabVariables = useCallback((tabName: string, variables: Variable[]) => {
+  const updateTabVariables = useCallback((tabName: string, newVariables: Variable[], args: DebugProtocol.VariablesArguments) => {
+
     setTabs(prev => {
       const newTabs = new Map(prev);
       const tab = newTabs.get(tabName);
+
       if (tab) {
+        var variables = tab.variables;
+        // 需要将 variables 转化为 VariableTreeNode
+        const variableTree: VariableTreeNode[] = newVariables.map(variable => ({
+          ...variable,
+          children: []
+        }));
+        console.log('Updated variables for tab', tabName, 'args', args, 'old variables', variables);
+
+        
+        // 获取的是子元素， 需要合并到父元素中
+        if (args && args.variablesReference) {
+          // 递归 寻找variables.reference = args.variablesReference 的节点， 并将 variableTree 合并到该节点的 children 中
+          const mergeVariables = (nodes: VariableTreeNode[]): boolean => {
+            for (let node of nodes) {
+              if (node.variablesReference === args.variablesReference) {
+                // 找到匹配节点，合并 children
+                 if (args.start ) {
+                      // 需要合并
+                      node.children = [...(node.children || []), ...variableTree];
+                    } else {
+                      // 直接替换
+                      node.children = variableTree;
+                    }
+                return true;
+              }
+              if (node.children && node.children.length > 0) {
+                if (mergeVariables(node.children)) {
+                  return true;
+                }
+              }   
+            }
+            return false;
+          }
+          if (!mergeVariables(variables)) {
+            variables = variableTree;
+          }
+          
+          
+        } else {
+          variables = variableTree;
+        }
+        console.log('Updated variables for tab', tabName, 'args', 
+          args, 'old variables', variables);
+
         newTabs.set(tabName, { ...tab, variables });
       }
       return newTabs;
@@ -384,17 +434,12 @@ const App: React.FC = () => {
                       <div className="variables-section">
                         <div className="section-header">Variables</div>
                         <div className="variables-list">
-                          {activeTabData.variables.length === 0 ? (
-                            <div className="empty-state">No variables to display</div>
-                          ) : (
-                            activeTabData.variables.map((variable, index) => (
-                              <div key={index} className="variable-item">
-                                <span className="variable-name">{variable.name}</span>
-                                <span className="variable-type">({variable.type})</span>
-                                <span className="variable-value">= {variable.value}</span>
-                              </div>
-                            ))
-                          )}
+                           {/* 使用 VariableTree 组件展示变量树 */}
+                           <VariableTree  
+                             variables={activeTabData.variables}
+                             tabName={activeTabData.name}
+                             vscode={vscode}
+                           />
                         </div>
                       </div>
                     </div>

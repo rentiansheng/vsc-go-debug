@@ -184,6 +184,11 @@
         "command": "goDebugPro.copyGoDebugOutput",
         "title": "Copy Go Debug Output",
         "icon": "$(copy)"
+      },
+      {
+        "command": "goDebugPro.addWatchExpression",
+        "title": "Add to Watch",
+        "icon": "$(eye)"
       }
     ],
     "menus": {

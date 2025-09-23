@@ -1,8 +1,13 @@
+import { DebugProtocol } from 'vscode-debugprotocol';
+
 export interface Variable {
   name: string;
   value: string;
   type: string;
+  // 在 debug Adapter 中对应 DebugProtocol.Variable 的 variablesReference， 表示可以展开的子变量引用
   variablesReference?: number;
+  // 在 debug Adapter 中对应 DebugProtocol.Variable 的 variablesReferenceCount，表示子变量的数量，
+  variablesReferenceCount?: number;
   indexedVariables?: number;
   namedVariables?: number;
   presentationHint?: {
@@ -12,6 +17,12 @@ export interface Variable {
   };
   addr?: number;
 }
+
+export interface VariableTreeNode extends Variable {
+  children?: VariableTreeNode[];
+}
+
+
 
 export interface StackFrame {
   id: number;
@@ -44,7 +55,7 @@ export interface TabData {
   name: string;
   active: boolean;
   logs: string[];
-  variables: Variable[];
+  variables: VariableTreeNode[];
   stack: {
     stackFrames: StackFrame[];
     totalFrames: number;
