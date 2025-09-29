@@ -1,6 +1,32 @@
+function tsBuildExpandLinkHtml() : string{
+    return ` 
+    function buildExpandLinkHtml(hasChildren,isExpanded) {
+        const expandSpan = document.createElement('span');
+        expandSpan.className = 'expand-link';
+        if (hasChildren) {
+            expandSpan.setAttribute('expand-status', isExpanded ? 'true' : 'false');
+            if(isExpanded) {
+                expandSpan.innerHTML = 'v';
+            } else {
+                expandSpan.innerText = '>';
+            }
+            
+        }  else {
+             expandSpan.setAttribute('expand-status', 'false');
+            expandSpan.innerHTML = '&nbsp;';
+            expandSpan.style.display = 'inline-block';
+
+         } 
+        return expandSpan;
+    }
+    `;
+}
+
+
 export function getVariablesHtml(): string {
     return `
-        ${getUpdateVariablesHtml()}
+        ${tsUpdateVariablesHtml()}
+        ${tsBuildExpandLinkHtml()}
 
         function buildVariableItemNode(tabName, variable, isExpanded, stackListHTMLNode, parentReference) {
             const div = document.createElement('div');
@@ -11,19 +37,8 @@ export function getVariablesHtml(): string {
             div.setAttribute('data-len',  variable.indexedVariables || variable.namedVariables|| 0 );
               
             const variableItemInfo = document.createElement('div');
-            const expandSpan = document.createElement('span');
-            if (hasChildren) {
-                expandSpan.className = 'expand-link';
-                expandSpan.setAttribute('expand-status', isExpanded ? 'true' : 'false');
-                if(isExpanded) {
-                    expandSpan.innerHTML = 'v';
-                } else {
-                    expandSpan.innerText = '>';
-                }
-                variableItemInfo.appendChild(expandSpan);
-            }  else {
-                variableItemInfo.innerHTML = \`<span style="display:inline-block;" class='expand-link'>&nbsp;</span>\`;
-            } 
+            const expandSpan = buildExpandLinkHtml(hasChildren, isExpanded);
+            variableItemInfo.appendChild(expandSpan);
      
             variableItemInfo.innerHTML +=  \`<span class="variable-key">\${variable.name}</span>  
             <span class="variable-type">(\${variable.type})</span>\`;
@@ -217,12 +232,12 @@ export function getVariablesHtml(): string {
             return valueSpan;          
         }
 
-        ${getWatchHTML()}
+        ${tsGetWatchHTML()}
 `;
 }
 
 
-function getUpdateVariablesHtml(): string {
+function tsUpdateVariablesHtml(): string {
     return ` 
         function updateVariables(tabName, variables, args) {
             const tabContent = document.querySelector(\`[data-content="\${tabName}"]\`);
@@ -305,7 +320,7 @@ function getUpdateVariablesHtml(): string {
  `;
 }
 
-function getWatchHTML(): string {
+function tsGetWatchHTML(): string {
     return `
     
         function refreshWatchExpressions(configName) {
