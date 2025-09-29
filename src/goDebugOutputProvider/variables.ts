@@ -1,78 +1,6 @@
 export function getVariablesHtml(): string {
     return `
-      function updateVariables(tabName, variables, args) {
-            const tabContent = document.querySelector(\`[data-content="\${tabName}"]\`);
-            if (!tabContent) return;
-            var variablesList = tabContent.querySelector('.variables-list');
-            if (!variablesList) return;
-             const stackListHTMLNode = tabContent.querySelector('.stack-list');
-             if(variablesList.childElementCount === 0) {
-                 variablesList.setAttribute('variable-reference', args.variablesReference);
-             } else {
-                 const existingRef = parseInt(variablesList.getAttribute('variable-reference')) || 0;
-                 if(existingRef == args.variablesReference && !args.start) {
-                     // 清空旧数据
-                     variablesList.innerHTML = '';
-                 }
-             }
-
-            var isExpanded = false;
-
-             // Update variables (右侧)
-            if (variables) {
- 
-                 const variablesReference = args.variablesReference; 
-                // 先不支持增量获取
-                const variableItemNode = variablesList.querySelector(\`.variable-item[data-reference="\${variablesReference}"]\`);
-                var childInfoNode = null;
-                var dataLen = 0;
-                if(variableItemNode) {
-                    childInfoNode = variableItemNode.querySelector(\`.child-variables\`);
-                    dataLen = variableItemNode.getAttribute('data-len');
-                }
-
-                isExpanded = false;
-                if(childInfoNode){
-                    variablesList = childInfoNode;
-                    const expandLink = childInfoNode.querySelector('.expand-link');
-                    if(expandLink) {
-                        if(expandLink.getAttribute('expand-status') === 'true') {
-                            isExpanded = true;
-                        }
-                    }
-               
-                    
-                }
-                var currentIdx = args.start || 0;
-                if (variables && variables.length  > 0) {
-                    variables[0].name === 'len()' && variables.shift();
-                }
-                const needLoad = currentIdx  + variables.length  >=  parseInt(dataLen);
-                
-                variables.forEach((variable, index) =>  {
-               
-                    currentIdx += index;
-                    const div = buildVariableItemNode(tabName, variable, isExpanded, stackListHTMLNode, variablesReference);
-                    variablesList.appendChild(div);
-                });
-                if(dataLen  && dataLen > variablesList.childElementCount) {
-                    const loadMoreDiv = document.createElement('div');
-                    loadMoreDiv.className = 'load-more';
-                    loadMoreDiv.innerHTML = '<span class="load-more-link">load more...</span>';
-                    loadMoreDiv.onclick = (e) => {
-                        loadMoreDiv.remove();
-                        e.stopPropagation();
-                        vscode.postMessage({
-                            tabName: tabName,
-                            command: 'get_variables',
-                            variablesReference: variablesReference,
-                            startIndex: variablesList.childElementCount
-                        });
-                    };
-                    variablesList.appendChild(loadMoreDiv);
-                }          
-            }  
-        }
+        ${getUpdateVariablesHtml()}
 
         function buildVariableItemNode(tabName, variable, isExpanded, stackListHTMLNode, parentReference) {
             const div = document.createElement('div');
@@ -293,6 +221,89 @@ export function getVariablesHtml(): string {
 `;
 }
 
+
+function getUpdateVariablesHtml(): string {
+    return ` 
+        function updateVariables(tabName, variables, args) {
+            const tabContent = document.querySelector(\`[data-content="\${tabName}"]\`);
+            if (!tabContent) return;
+            var variablesList = tabContent.querySelector('.variables-list');
+            if (!variablesList) return;
+            const stackListHTMLNode = tabContent.querySelector('.stack-list');
+            if (variablesList.childElementCount === 0) {
+                variablesList.setAttribute('variable-reference', args.variablesReference);
+            } else {
+                const existingRef = parseInt(variablesList.getAttribute('variable-reference')) || 0;
+                if (existingRef == args.variablesReference && !args.start) {
+                    // 清空旧数据
+                    variablesList.innerHTML = '';
+                }
+            }
+
+            updateVariablesLogics(variables, args, tabName, variablesList, stackListHTMLNode);
+ 
+        }
+
+        function updateVariablesLogics(variables, args, tabName, variablesList, stackListHTMLNode) {
+            // Update variables (右侧)
+            if (!variables) {
+                return ;
+            }
+            const variablesReference = args.variablesReference;
+            // 先不支持增量获取
+            const variableItemNode = variablesList.querySelector(\`.variable-item[data-reference="\${variablesReference}"]\`);
+            var childInfoNode = null;
+            var dataLen = 0;
+            if (variableItemNode) {
+                childInfoNode = variableItemNode.querySelector('.child-variables');
+                dataLen = variableItemNode.getAttribute('data-len');
+            }
+
+            var isExpanded = false;
+            if (childInfoNode) {
+                variablesList = childInfoNode;
+                const expandLink = childInfoNode.querySelector('.expand-link');
+                if (expandLink) {
+                    if (expandLink.getAttribute('expand-status') === 'true') {
+                        isExpanded = true;
+                    }
+                }
+
+
+            }
+            var currentIdx = args.start || 0;
+            if (variables && variables.length > 0) {
+                variables[0].name === 'len()' && variables.shift();
+            }
+            const needLoad = currentIdx + variables.length >= parseInt(dataLen);
+
+            variables.forEach((variable, index) => {
+
+                currentIdx += index;
+                const div = buildVariableItemNode(tabName, variable, isExpanded, stackListHTMLNode, variablesReference);
+                variablesList.appendChild(div);
+            });
+            if (dataLen && dataLen > variablesList.childElementCount) {
+                const loadMoreDiv = document.createElement('div');
+                loadMoreDiv.className = 'load-more';
+                loadMoreDiv.innerHTML = '<span class="load-more-link">load more...</span>';
+                loadMoreDiv.onclick = (e) => {
+                    loadMoreDiv.remove();
+                    e.stopPropagation();
+                    vscode.postMessage({
+                        tabName: tabName,
+                        command: 'get_variables',
+                        variablesReference: variablesReference,
+                        startIndex: variablesList.childElementCount
+                    });
+                };
+                variablesList.appendChild(loadMoreDiv);
+            }
+        }
+
+ 
+ `;
+}
 
 function getWatchHTML(): string {
     return `
