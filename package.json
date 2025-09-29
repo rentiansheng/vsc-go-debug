@@ -10,10 +10,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/rentiansheng/go-debug-pro.git"
+    "url": "https://github.com/rentiansheng/vsc-go-debug.git"
   },
   "bugs": {
-    "url": "https://github.com/rentiansheng/go-debug-pro/issues"
+    "url": "https://github.com/rentiansheng/vsc-go-debug/issues"
   },
   "homepage": "https://github.com/rentiansheng/go-debug-pro#readme",
   "license": "MIT",
@@ -44,16 +44,7 @@
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
-      {
-        "command": "goDebugPro.testActivation",
-        "title": "Test Go Debug Pro Activation",
-        "category": "Go Debug Pro"
-      },
-      {
-        "command": "goDebugPro.toggleConditionalBreakpoint",
-        "title": "Toggle Conditional Breakpoint",
-        "icon": "$(debug-breakpoint-conditional)"
-      },
+ 
       {
         "command": "goDebugPro.refreshConfigs",
         "title": "Refresh Debug Configurations",
@@ -189,11 +180,6 @@
     "menus": {
       "editor/context": [
         {
-          "command": "goDebugPro.toggleConditionalBreakpoint",
-          "when": "resourceExtname == .go && debuggersAvailable",
-          "group": "debug"
-        },
-        {
           "command": "goDebugPro.debugCurrentFile",
           "when": "resourceExtname == .go && resourceFilename =~ /main\\.go$/",
           "group": "goDebugPro@1"
@@ -301,22 +287,8 @@
           "command": "goDebugPro.runDebugConfiguration",
           "when": "view == goDebugProRunConfigs && viewItem == runConfig",
           "group": "1_actions@1"
-        },
-        {
-          "command": "goDebugPro.editRunConfiguration",
-          "when": "view == goDebugProRunConfigs && viewItem == runConfig",
-          "group": "1_actions@2"
-        },
-        {
-          "command": "goDebugPro.duplicateRunConfiguration",
-          "when": "view == goDebugProRunConfigs && viewItem == runConfig",
-          "group": "2_manage@1"
-        },
-        {
-          "command": "goDebugPro.deleteRunConfiguration",
-          "when": "view == goDebugProRunConfigs && viewItem == runConfig",
-          "group": "2_manage@2"
         }
+ 
        
       ],
       "debug/configuration": [
@@ -331,12 +303,7 @@
           "group": "1_modification@2"
         }
       ],
-      "debug/variables/context": [
-        {
-          "command": "goDebugPro.addWatchExpression",
-          "when": "debugType == 'go-debug-pro'"
-        }
-      ],
+   
       "output/context": [
         {
           "command": "goDebugPro.copyGoDebugOutput",

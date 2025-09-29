@@ -161,30 +161,7 @@ Search for related configuration items in VS Code settings:
 }
 ```
 
-### Attach Configuration
-```json
-{
-    "name": "Attach to Process",
-    "type": "go-debug-pro",
-    "request": "attach",
-    "mode": "local",
-    "processId": "${command:pickProcess}",
-    "dlvFlags": ["--headless", "--listen=:2345"]
-}
-```
-
-### Remote Debug Configuration
-```json
-{
-    "name": "Remote Debug",
-    "type": "go-debug-pro",
-    "request": "attach",
-    "mode": "remote",
-    "remotePath": "${workspaceFolder}",
-    "port": 2345,
-    "host": "127.0.0.1"
-}
-```
+ 
 
 ## 🏗️ Project Architecture
 
