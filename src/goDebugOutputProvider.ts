@@ -2262,7 +2262,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 if (!item || item.classList.contains('disabled')) return;
                 
                 const action = item.getAttribute('data-action');
-                handleContextMenuAction(action);
+                handleContextMenuAction(action, variable, tabName);
                 hideContextMenu();
             });
             
@@ -2274,8 +2274,6 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
  
              
             const menu = createContextMenu(variable, tabName);
-     
-            
             // 显示菜单并调整位置
             menu.style.display = 'block';
             menu.style.left = x + 'px';
@@ -2321,7 +2319,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                     break;
                     
                 case 'copy-expression':
-                    copyToClipboard(\`\${variable.v} = \${variable.value}\`);
+                    copyToClipboard(\`\${variable.evaluateName}\`);
                     break;
                     
                     
@@ -2336,13 +2334,40 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
         
         function copyToClipboard(text) {
-            // 使用 VSCode API 或者临时textarea来复制文本
-            const textarea = document.createElement('textarea');
-            textarea.value = text;
-            document.body.appendChild(textarea);
-            textarea.select();
-            document.execCommand('copy');
-            document.body.removeChild(textarea);
+            // 优先使用现代的 Clipboard API
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(() => {
+                 }).catch(err => {
+                    console.warn('Clipboard API failed, falling back to legacy method:', err);
+                    fallbackCopy(text);
+                });
+            } else {
+                // 回退到传统方法
+                fallbackCopy(text);
+            }
+        }
+        
+        function fallbackCopy(text) {
+            try {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.position = 'fixed';
+                textarea.style.left = '-999999px';
+                textarea.style.top = '-999999px';
+                document.body.appendChild(textarea);
+                textarea.focus();
+                textarea.select();
+                const successful = document.execCommand('copy');
+                document.body.removeChild(textarea);
+                
+                if (!successful) {
+                    console.error('Fallback: Copy command was unsuccessful');
+                    showNotification('复制失败', 'error');
+                }
+            } catch (err) {
+                console.error('Copy failed:', err);
+                showNotification('复制失败', 'error');
+            }
         }
         
    
