@@ -526,4 +526,6 @@ export class GoDebugConfigurationProvider implements vscode.DebugConfigurationPr
         fs.writeFileSync(launchJsonPath, JSON.stringify(launchConfig, null, 2));
         
     }
+
+    
 }
