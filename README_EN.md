@@ -1,11 +1,20 @@
 # Go Debug Pro
 
-🚀 A powerful VS Code Golang debugging extension that provides out-of-the-box functionality, aiming to deliver a professional debugging experience similar to GoLand. Compatible with existing VS Code debugging configurations.
+🚀 A powerful VS Code Golang debugging extension providing out-of-the-box functionality, aiming to deliver a professional-grade debugging experience similar to GoLand. Compatible with existing VS Code debug configurations.
 
 ![VS Code Version](https://img.shields.io/badge/VS%20Code-1.85.0+-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.9+-blue)
 ![Go](https://img.shields.io/badge/Go-1.19+-00ADD8?logo=go)
+
+
+A debug option tab is copied in the left workspace for managing run configurations, compatible with VS Code configurations.
+Implements management and debug functions. Configuration items can be edited by clicking, run and debug appear on hover, right-click supports edit, run (debug), delete
+![left copy debug tab](./png/left.jpg)
+A new output tab is added to the bottom workspace, responsible for console and debug.
+Includes run/debug toolbar, console, debug (stack trace, variable, watch)
+![bottom console variable](./png/variables.png)
+![bottom console watch](./png/watch.png)
 
 ## 📋 Table of Contents
 

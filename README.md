@@ -1,11 +1,23 @@
 # Go Debug Pro
 
+[English doc](./README_EN.md)
+
+
 🚀 一个功能强大的 VS Code Golang 调试扩展，提供开箱即用的功能，目标提供类似 GoLand 的专业级调试体验。兼容现有 vscode 调试配置。
 
 ![VS Code Version](https://img.shields.io/badge/VS%20Code-1.85.0+-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.9+-blue)
 ![Go](https://img.shields.io/badge/Go-1.19+-00ADD8?logo=go)
+
+
+在左侧工作区拷贝一个 debug 选型卡，用来管理运行配置项，与 vscode 配置兼容。 
+实现管理和debug等功能。 配置项，单击编辑，hover 会出现，运行和 debug， 右击支持编辑，运行(debug)，删除
+![left copy debug tab](./png/left.jpg) 
+在底部工作区，新加一个输出tab, 用来负责console 和debug。 
+包含 run/debug toolbar, console, debug(stack trace, variable, watch)
+![bottom console variable](./png/variables.png)
+![bottom console watch](./png/watch.png)
  
 ## 📋 目录
 
@@ -30,7 +42,7 @@
 
 ## ✨ 主要特性
 
-### � 智能配置管理
+###  智能配置管理
 - **单击打开配置**：单击配置项直接打开可视化编辑器
 - **右键操作菜单**：复制配置、删除配置等快捷操作
 - **统一菜单整合**：清理重复菜单，提供简洁的用户界面
@@ -42,7 +54,7 @@
 - **模板支持**：提供多种预设模板，快速创建不同类型的配置
 - **智能验证**：自动验证配置的正确性，防止配置错误
 
-### �️ 高级调试功能
+###  高级调试功能
 - **条件断点**：支持基于表达式的条件断点设置
 - **Hit Count 断点**：支持命中次数控制的断点
 - **实时变量监视**：监视表达式自动刷新，实时查看变量变化
