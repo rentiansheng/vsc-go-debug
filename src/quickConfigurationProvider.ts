@@ -28,20 +28,7 @@ export class QuickConfigurationProvider implements vscode.TreeDataProvider<Quick
     getChildren(element?: QuickConfigItem): Thenable<QuickConfigItem[]> {
         if (!element) {
             const items: QuickConfigItem[] = [];
-
-            // Add quick create button
-            items.push(new QuickConfigItem(
-                '$(plus) Create New Configuration',
-                'Click to create a new debug configuration',
-                vscode.TreeItemCollapsibleState.None,
-                'createConfig',
-                {
-                    command: 'goDebugPro.createConfigurationWithEditor',
-                    title: 'Create Configuration',
-                    arguments: []
-                }
-            ));
-
+ 
             // Add existing configurations
             this.configurations.forEach(config => {
                 const description = this.getConfigDescription(config);

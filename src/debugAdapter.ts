@@ -35,8 +35,8 @@ import {
 	StoppedEvent,
 	TerminatedEvent,
 	Thread
-} from 'vscode-debugadapter';
-import { DebugProtocol } from 'vscode-debugprotocol';
+} from '@vscode/debugadapter';
+import { DebugProtocol } from '@vscode/debugprotocol';
 import { parseEnvFiles } from './utils/envUtils';
 import {
 	correctBinname,

@@ -6,7 +6,7 @@ import { runDebugConfiguration } from './extension';
 
 
 
-import { DebugProtocol } from 'vscode-debugprotocol';
+import { DebugProtocol } from '@vscode/debugprotocol';
 import { getBodyHtml } from './goDebugOutputProvider/body';
 import { getStyles } from './goDebugOutputProvider/styles';
 import { isString } from 'util';

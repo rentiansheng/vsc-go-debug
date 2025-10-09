@@ -2,7 +2,7 @@
   "name": "go-debug-pro",
   "displayName": "Go Debug Pro",
   "description": "Professional Go debugging extension with visual configuration editor, conditional breakpoints, and advanced debugging features",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "reage",
   "author": {
     "name": "reage",
@@ -44,7 +44,6 @@
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
- 
       {
         "command": "goDebugPro.refreshConfigs",
         "title": "Refresh Debug Configurations",
@@ -288,8 +287,6 @@
           "when": "view == goDebugProRunConfigs && viewItem == runConfig",
           "group": "1_actions@1"
         }
- 
-       
       ],
       "debug/configuration": [
         {
@@ -303,7 +300,6 @@
           "group": "1_modification@2"
         }
       ],
-   
       "output/context": [
         {
           "command": "goDebugPro.copyGoDebugOutput",

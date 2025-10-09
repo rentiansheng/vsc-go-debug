@@ -7,18 +7,17 @@
 import { ChildProcess, ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import stream = require('stream');
 import vscode = require('vscode');
-import { OutputEvent, TerminatedEvent } from 'vscode-debugadapter';
+import { OutputEvent, TerminatedEvent } from '@vscode/debugadapter';
 import path = require('path');
 import * as fs from 'fs';
 import * as net from 'net';
-import { DebugProtocol } from 'vscode-debugprotocol';
+import { DebugProtocol } from '@vscode/debugprotocol';
 import { getEnvPath, getBinPathFromEnvVar } from './utils/pathUtils';
 import {
 	fixDriveCasingInWindows
 } from './utils/pathUtils';
 import { GoDebugOutputProvider } from './goDebugOutputProvider';
 
-import * as debugProtocol  from 'vscode-debugprotocol';
 
 // Dynamic import helper for get-port (ES module)
 async function getAvailablePort(): Promise<number> {
