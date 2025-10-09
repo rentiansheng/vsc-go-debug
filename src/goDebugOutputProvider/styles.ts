@@ -662,29 +662,35 @@ return ` /* VS Code icon symbols - using Unicode characters that work in VS Code
             padding: 10px 14px;
             margin-bottom: 8px;
             border-radius: 7px;
-            background: #fff;
-            box-shadow: 0 1px 4px #0002;
+             box-shadow: 0 1px 4px #0002;
             display: flex;
             flex-direction: column;
             transition: box-shadow 0.2s, background 0.2s;
             cursor: pointer;
+            color:#1976d2;
+            text-decoration:underline;
         }
 
         .output-content .stack-item:hover {
             box-shadow: 0 2px 8px #0003;
             background: #e7f3ff;
         }
-
-        .output-content .stack-item.selected {
-            border-left: 4px solid #4c8bf4;
-            background: #dbeafe;
+        
+        .stack-item.selected {
+            color: #fff;                 /* 选中时字体变白 */
+            font-weight: bold;           /* 选中时加粗 */
+            border-radius: 4px;          /* 轻微圆角，更美观 */
+            box-shadow: 0 2px 8px rgba(25, 118, 210, 0.15); /* 阴影效果 */
+            text-decoration: none;
+            font-size: 120%;
+            padding-top: 5px;
+            padding-bottom: 5px;
+            cursor:  not-allowed;
         }
 
-        .output-content .stack-item.subtle {
-            opacity: 0.7;
-            font-style: italic;
-            background: #f0f0f0;
-        }
+
+  
+  
 
         .output-content .frame-location {
             color: #888;
@@ -720,6 +726,7 @@ return ` /* VS Code icon symbols - using Unicode characters that work in VS Code
             color: #f44336;
         }
 
+   
        `;
 
 }

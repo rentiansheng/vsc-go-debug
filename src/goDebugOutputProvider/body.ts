@@ -671,6 +671,7 @@ return `<body>
                 const liIdx = args.startFrame + idx;
                 if (liIdx == 0) {
                     stackList.setAttribute('frame-id', frame.id);
+                    stackList.setAttribute('thread-id', args.threadId);
                 }
                 var li = stackList.querySelector(\`li[data-index="\${liIdx}"]\`);
                 if (!li) {
@@ -678,19 +679,19 @@ return `<body>
                 }
                 const filePath = frame.source.path;
                 const fileLinePath = frame.title;
-                li.className = 'stack-item' + (frame.presentationHint === 'subtle' ? ' subtle' : '');
+                li.className = 'stack-item' + (frame.presentationHint === 'subtle' ? ' ' : ' selected');
                 li.setAttribute('data-frame-id', frame.id);
                 li.setAttribute('title', fileLinePath);
                 li.setAttribute('data-index', idx);
                 li.innerHTML = \`
                     <div class="frame-location">
-                        <span style="color:#1976d2;text-decoration:underline;cursor:pointer;" class="source-link"> \${fileLinePath}</span>
+                        <span style="cursor: pointer;" class="source-link"> \${fileLinePath}</span>
                     </div>
                 \`;
 
 
-                // 点击跳转源码
-                li.querySelector('.source-link').onclick = (e) => {
+               // 点击跳转源码
+                li.querySelector('.source-link').addEventListener("dblclick", (e) => {
                     e.stopPropagation();
                     vscode.postMessage({
                         command: 'gotoSource',
@@ -698,11 +699,19 @@ return `<body>
                         line: frame.line,
                         column: frame.column
                     });
-                };
+                });
                 // 选中高亮
                 li.onclick = () => {
                     tabContent.querySelectorAll('.stack-item').forEach(el => el.classList.remove('selected'));
                     li.classList.add('selected');
+                    stackList.setAttribute('frame-id', frame.id);
+                    // 通知扩展侧切换堆栈帧 
+                    vscode.postMessage({
+                        command: 'refresh_watch_and_variables',
+                        tabName: configName,
+                        frameId: frame.id,
+                        threadId: args.threadId
+                    });
                 };
                 stackList.appendChild(li);
             });
@@ -711,6 +720,19 @@ return `<body>
 
         function updateScopes(tabName, scopes) {
             console.log('Updating scopes for tab:', tabName, scopes);
+        }
+        
+        function cleanVariableAndWatch(tabName) {
+            const tabContent = document.querySelector(\`[data-content="\${tabName}"]\`);
+            if (!tabContent) return;
+
+
+            const variablesList = tabContent.querySelector('.variables-list');
+            if (variablesList) {
+                variablesList.innerHTML = '';
+            }
+            cleanWatchExpressions(tabName);
+      
         }
 
         function cleanDebugInfo(tabName) {
@@ -727,6 +749,7 @@ return `<body>
             if (variablesList) {
                 variablesList.innerHTML = '';
             }
+            v2ResetWatchExpressionValue(tabName);
         }
 
 
@@ -1379,7 +1402,19 @@ return `<body>
 
 
 
-
+        function v2ResetWatchExpressionValue(tabName) {
+            const expressions = watchExpressions.get(tabName);
+            const tabContent = document.querySelector(\`[data-content="\${tabName}"]\`);
+            if (!tabContent) return;
+            const watchExpressionsContainer = tabContent.querySelector('.watch-expressions');
+            if (!watchExpressionsContainer) return;
+            watchExpressionsContainer.querySelectorAll('.variable-item').forEach(item => item.remove());
+            expressions.forEach(watchExpr => {
+                watchExpr.value = 'Evaluating...';
+                addWatchRow(tabName, watchExpr);
+            });
+            
+        }   
 
 
         function addWatchExpression(tabName, expression, variablesReference) {
@@ -1623,6 +1658,11 @@ return `<body>
                         cleanDebugInfo(message.tabName);
                     }
                     break;
+                case "cleanVariableAndWatch":
+                    if (message.tabName) {
+                        cleanVariableAndWatch(message.tabName);
+                    }
+                    break;
                 case "setVariableCallback":
                     if (message.tabName && message.variableName) {
                         setVariableCallback(message.tabName, message.variableName, message.newValue, message.variablesReference, message.evaluateName);
@@ -1633,11 +1673,7 @@ return `<body>
                         showNotification(message.message, 'error');
                     }
                     break;
-                case 'waitchExpressionResponse':
-                    if (message.tabName && message.expression) {
-                        waitchExpressionResponse(message.tabName, message.expression, message.variablesReference);
-                    }
-                    break;
+             
                 case 'updateWatchExpression':
                     if (message.tabName && message.expressionId) {
                         updateWatchExpressionValue(

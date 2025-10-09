@@ -3,14 +3,14 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { GlobalStateManager, ConfigState, StateChangeEvent } from './globalStateManager';
 import { runDebugConfiguration } from './extension';
- 
- 
+
+
 
 import { DebugProtocol } from 'vscode-debugprotocol';
 import { getBodyHtml } from './goDebugOutputProvider/body';
 import { getStyles } from './goDebugOutputProvider/styles';
 import { isString } from 'util';
- 
+
 
 
 
@@ -98,6 +98,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
         return;
     }
+
     public static Variables(variables: DebugProtocol.Variable[], args: DebugProtocol.VariablesArguments, tabName: string = 'General') {
         if (GoDebugOutputProvider.instance) {
             GoDebugOutputProvider.instance.updateVariables(tabName, variables, args);
@@ -130,36 +131,68 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 return;
             }
             // 重新拉取 stack
-            const stackReq  = { threadId: id, startFrame: 0, levels: 20 };
+            const stackReq = { threadId: id, startFrame: 0, levels: 20 };
             session.customRequest('stackTrace', stackReq).then((response: any) => {
                 if (response && response.stackFrames) {
-                    inst?.addStack( response,stackReq, tabName);
+                    inst?.addStack(response, stackReq, tabName);
                 }
-                if(response && response.stackFrames && response.stackFrames.length>0){
+                if (response && response.stackFrames && response.stackFrames.length > 0) {
                     const topFrame = response.stackFrames[0];
                     // 重新拉取 scopes
-                    const scopesReq = { threadId: id, frameId: topFrame.id };
-                    session.customRequest('scopes', scopesReq).then((response: any) => {
-                        // 重新拉取 variables
-                        const variablesReq = { variablesReference: topFrame.id, start: 0 };
-                        session.customRequest('variables', variablesReq).then((response: any) => {
-                            if (response && response.variables) {
-                                inst?.addVariables(response.variables, variablesReq, tabName);
-                            }
-                        });
-                    });
-                    // 重新拉取 watch expressions
-                    // inst?.WatchExpressions();
-                    // 获取页面中所有的 watch expressions
-                    const watchs = inst?._watchExpressions.get(tabName) || [];
-                    for (const { expression, id } of watchs) {
-                        inst?.evaluateWatchExpressionByDebugSession(expression, id, topFrame.id, session, tabName);
-                    }
+                    inst?._refreshVariableAndWatchByInst(tabName, session, id, topFrame.id);
 
                 }
             });
-           
+
         }
+    }
+
+    public static refreshVariableAndWatch(tabName: string, session: vscode.DebugSession, threadId: number, frameId: number) {
+        var inst = GoDebugOutputProvider.instance;
+        if (!inst) {
+            console.warn(`No instance found`);
+            return;
+        }
+
+        inst?._refreshVariableAndWatchByInst(tabName, session, threadId, frameId);
+    }
+
+    private refreshVariableAndWatch(tabName: string, threadId: number, frameId: number) {
+        const session = this.getSession(tabName);
+        if (!session) {
+            console.warn(`No debug for : ${tabName}`);
+            return;
+        }
+        this._sendCleanVariableAndWatchMessage(tabName);
+        this._refreshVariableAndWatchByInst(tabName, session, threadId, frameId);
+
+    }
+
+ 
+    private _refreshVariableAndWatchByInst(tabName: string, session: vscode.DebugSession, threadId: number, frameId: number) {
+
+        // 重新拉取 scopes
+        const scopesReq = { threadId: threadId, frameId: frameId };
+        session.customRequest('scopes', scopesReq).then((scopesResponse: any) => {
+            var variablesReference = scopesResponse.scopes[0].variablesReference;
+            // 重新拉取 variables
+            const variablesReq = { variablesReference: variablesReference, start: 0 };
+            session.customRequest('variables', variablesReq).then((response: any) => {
+                if (response && response.variables) {
+                    this.addVariables(response.variables, variablesReq, tabName);
+                }
+            });
+
+            // 重新拉取 watch expressions
+            // inst?.WatchExpressions();
+            // 获取页面中所有的 watch expressions
+            const watchs = this._watchExpressions.get(tabName) || [];
+            for (const { expression, id } of watchs) {
+                this.evaluateWatchExpressionByDebugSession(expression, id, variablesReference, session, tabName);
+            }
+        });
+       
+
     }
 
     public static WatchExpressions() {
@@ -282,6 +315,8 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                         const _re = this._watchExpressions.get(message.tabName) || [];
                         this._watchExpressions.set(message.tabName, _re.filter(w => w.id !== message.expressionId));
                         break;
+                    case 'refresh_watch_and_variables':
+                        this.refreshVariableAndWatch(message.tabName, message.threadId, message.frameId);
                 }
             },
             undefined
@@ -300,7 +335,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 });
                 if (!session) {
                     return null;
-                }   
+                }
             }
             return session;
         }
@@ -308,22 +343,22 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     }
 
     private getVariables(variablesReference: number, start: number, message: any, tabName: string): void {
- 
+
         var session = this.getSession(tabName);
-           
+
         if (!session) {
             console.warn(`[getVariables] No debug session found for tab: ${tabName}`);
             return;
         }
         if (isString(variablesReference)) {
-            variablesReference = parseInt(variablesReference ) || 0;
-        }    
-        
-        var reqVars: DebugProtocol.VariablesArguments  = {
+            variablesReference = parseInt(variablesReference) || 0;
+        }
+
+        var reqVars: DebugProtocol.VariablesArguments = {
             variablesReference: variablesReference,
             start: start,
-        } ;
-        if(start>0){
+        };
+        if (start > 0) {
             reqVars.count = 100;
             reqVars.filter = 'indexed';
         }
@@ -340,7 +375,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             }
         });
 
-    
+
 
     }
 
@@ -367,14 +402,14 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 if (response) {
                     console.log(`[setVariable] Successfully set variable ${variableName}:`, response);
 
-                     this._view?.webview.postMessage({
+                    this._view?.webview.postMessage({
                         command: 'setVariableCallback',
                         tabName: tabName,
                         variableName: variableName,
                         newValue: newValue,
-                        variablesReference:  variablesReference,
+                        variablesReference: variablesReference,
                         evaluateName: evaluateName
-                     });
+                    });
                 } else {
                     console.warn(`[setVariable] Failed to set variable ${variableName}`);
                 }
@@ -417,7 +452,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
 
             if (response) {
                 console.log(`[evaluateWatchExpression] Successfully evaluated: ${expression}`, response);
-                
+
                 if (response.variablesReference && response.variablesReference > 0) {
                     const rvn = response?.variablesReference;
                     // Optionally, you can fetch variables here if needed
@@ -426,7 +461,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                     } as DebugProtocol.VariablesArguments);
                     response.children = r2.variables || [];
 
-                }  
+                }
                 this._sendWatchExpressionResult(
                     tabName,
                     expressionId,
@@ -434,7 +469,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                     null,
                     frameId || 0,
                 );
-                
+
             } else {
                 console.warn(`[evaluateWatchExpression] Empty response for: ${expression}`);
                 this._sendWatchExpressionResult(tabName, expressionId, '', 'Empty response', 0);
@@ -444,12 +479,12 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             const errorMessage = error?.message || error?.toString() || 'Unknown error';
             this._sendWatchExpressionResult(tabName, expressionId, '', errorMessage, 0);
         }
-       
+
     }
 
     private _sendWatchExpressionResult(tabName: string, expressionId: string, value: string, error: string | null, variablesReference: number): void {
         if (this._view) {
-            
+
             this._view.webview.postMessage({
                 command: 'updateWatchExpression',
                 tabName: tabName,
@@ -1077,6 +1112,15 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         if (this._view) {
             this._view.webview.postMessage({
                 command: 'createTab',
+                tabName: tabName
+            });
+        }
+    }
+
+    private _sendCleanVariableAndWatchMessage(tabName: string) {
+        if (this._view) {
+            this._view.webview.postMessage({
+                command: 'cleanVariableAndWatch',
                 tabName: tabName
             });
         }
