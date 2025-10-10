@@ -1468,12 +1468,7 @@ return `<body>
             const isRunning = configState && (configState.state === 'running' || configState.state === 'starting');
             const isDebugSession = configState && configState.action === 'debug';
 
-            console.log(\`[JS] Updating toolbar for \${tabName}:\`, {
-                configState,
-                isRunning,
-                isDebugSession,
-                toolbarFound: !!toolbar
-            });
+         
 
 
 
@@ -1690,6 +1685,84 @@ return `<body>
             }
         });
 
+        // 自定义右键菜单功能 - 只显示Copy选项
+        function initCustomContextMenu() {
+            // 禁用默认右键菜单并显示自定义菜单
+            document.addEventListener('contextmenu', function(e) {
+                e.preventDefault(); // 阻止默认右键菜单
+                
+                const selection = window.getSelection();
+                const selectedText = selection ? selection.toString().trim() : '';
+                
+                // 只有当有选中文本时才显示菜单
+                if (selectedText) {
+                    showCustomContextMenu(e.pageX, e.pageY, selectedText);
+                }
+            });
+
+            // 键盘快捷键支持 (Ctrl+C / Cmd+C)
+            document.addEventListener('keydown', function(e) {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+                    const selection = window.getSelection();
+                    if (selection && selection.toString().trim()) {
+                        e.preventDefault();
+                        copyToClipboard(selection.toString());
+                    }
+                }
+            });
+        }
+
+        function showCustomContextMenu(x, y, selectedText) {
+            // 移除现有菜单
+            const existingMenu = document.querySelector('.custom-context-menu');
+            if (existingMenu) {
+                existingMenu.remove();
+            }
+
+            // 创建自定义菜单
+            const menu = document.createElement('div');
+            menu.className = 'custom-context-menu';
+            menu.style.left = x + 'px';
+            menu.style.top = y + 'px';
+
+            // 创建Copy菜单项
+            const copyItem = document.createElement('div');
+            copyItem.className = 'custom-menu-item';
+            copyItem.innerHTML = '📋 Copy';
+
+            copyItem.addEventListener('click', () => {
+                copyToClipboard(selectedText);
+                menu.remove();
+            });
+
+            menu.appendChild(copyItem);
+            document.body.appendChild(menu);
+
+            // 确保菜单不会超出窗口边界
+            const rect = menu.getBoundingClientRect();
+            const windowWidth = window.innerWidth;
+            const windowHeight = window.innerHeight;
+
+            if (rect.right > windowWidth) {
+                menu.style.left = (windowWidth - rect.width - 10) + 'px';
+            }
+            if (rect.bottom > windowHeight) {
+                menu.style.top = (windowHeight - rect.height - 10) + 'px';
+            }
+
+            // 点击其他地方时隐藏菜单
+            setTimeout(() => {
+                document.addEventListener('click', function hideMenu(e) {
+                    if (!menu.contains(e.target)) {
+                        menu.remove();
+                        document.removeEventListener('click', hideMenu);
+                    }
+                });
+            }, 10);
+        }
+
+        // 初始化自定义右键菜单
+        initCustomContextMenu();
 
  
     </script>

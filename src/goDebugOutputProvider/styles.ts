@@ -260,7 +260,11 @@ return ` /* VS Code icon symbols - using Unicode characters that work in VS Code
             max-height: 100%;
             /* 确保不超出容器 */
             scroll-behavior: smooth;
-            /* 平滑滚动 */
+      
+            user-select: text !important;
+            -webkit-user-select: text !important;
+            -moz-user-select: text !important;
+            -ms-user-select: text !important;
         }
 
         .variables-content {
@@ -643,7 +647,11 @@ return ` /* VS Code icon symbols - using Unicode characters that work in VS Code
             word-break: break-word;
             /* 长单词换行 */
             white-space: pre-wrap;
-            /* 保持空格和换行 */
+            
+            user-select: text !important;
+            -webkit-user-select: text !important;
+            -moz-user-select: text !important;
+            -ms-user-select: text !important;
         }
 
         /* 为输出内容添加一些间距和样式 */
@@ -726,7 +734,60 @@ return ` /* VS Code icon symbols - using Unicode characters that work in VS Code
             color: #f44336;
         }
 
-   
+        /* 自定义右键菜单样式 - 只显示Copy */
+        .custom-context-menu {
+            position: fixed;
+            background: var(--vscode-menu-background);
+            border: 1px solid var(--vscode-menu-border);
+            border-radius: 3px;
+            padding: 4px 0;
+            min-width: 120px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+            z-index: 10000;
+            font-size: 12px;
+            font-family: var(--vscode-font-family);
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        .custom-menu-item {
+            padding: 6px 12px;
+            cursor: pointer;
+            color: var(--vscode-menu-foreground);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            transition: background-color 0.1s ease;
+        }
+
+        .custom-menu-item:hover {
+            background: var(--vscode-menu-selectionBackground);
+            color: var(--vscode-menu-selectionForeground);
+        }
+
+        .custom-menu-item.disabled {
+            color: var(--vscode-disabledForeground);
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        .custom-menu-item.disabled:hover {
+            background: transparent;
+            color: var(--vscode-disabledForeground);
+        }
+
+        /* 选择文本样式 */
+        ::selection {
+            background: var(--vscode-editor-selectionBackground) !important;
+            color: var(--vscode-editor-selectionForeground) !important;
+        }
+
+        ::-moz-selection {
+            background: var(--vscode-editor-selectionBackground) !important;
+            color: var(--vscode-editor-selectionForeground) !important;
+        }
+
+       
        `;
 
 }

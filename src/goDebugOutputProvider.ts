@@ -986,8 +986,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 stateColor: this.getStateColor(newState.state)
             };
 
-            console.log(`[GoDebugOutputProvider] Updating state display for ${configName}:`, stateDisplayInfo);
-
+ 
 
             // 同时更新标签页标题，显示运行状态
             this.updateTabTitle(configName, newState);
