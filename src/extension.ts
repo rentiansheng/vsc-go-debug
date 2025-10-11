@@ -6,11 +6,10 @@ import * as os from 'os';
 import * as cp from 'child_process';
 
 import { DebugConfigurationProvider } from './debugConfigProvider';
-import { RunConfigItem, RunConfigurationManager } from './runConfigManager';
+import { RunConfigurationManager } from './runConfigManager';
 import { RunConfigWebviewProvider } from './runConfigWebview';
 import { GoDebugConfigurationProvider as GoDebugConfigProvider } from './goDebugConfigurationProvider';
 import { ConfigurationEditorProvider } from './configurationEditorProvider';
-import { QuickConfigurationProvider } from './quickConfigurationProvider';
 import { GoDebugOutputProvider } from './goDebugOutputProvider';
 import { GlobalStateManager } from './globalStateManager';
 import { DelveClient } from './delveClient';
@@ -771,8 +770,7 @@ export function activate(context: vscode.ExtensionContext) {
 	globalDebugConfigProvider = debugConfigProvider; // Set global reference
 	const runConfigManager = new RunConfigurationManager();
 	const goDebugConfigProvider = new GoDebugConfigProvider();
-	const quickConfigProvider = new QuickConfigurationProvider(context);
-
+ 
 	activationChannel.appendLine('✅ Data providers initialized successfully');
 
 	// Register tree view for debug configurations

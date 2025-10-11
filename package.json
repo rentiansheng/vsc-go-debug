@@ -435,7 +435,7 @@
       "goDebugPro": [
         {
           "id": "goDebugProConfigs",
-          "name": "Debug Configurations",
+          "name": "",
           "icon": "$(settings-gear)",
           "contextualTitle": "Go Debug Pro Configurations"
         }
