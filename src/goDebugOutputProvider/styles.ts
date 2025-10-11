@@ -520,11 +520,23 @@ return ` /* VS Code icon symbols - using Unicode characters that work in VS Code
         .variable-name {
             color: var(--vscode-debugTokenExpression-name);
             font-weight: bold;
+            max-width: 30%;           /* 最多显示宽度，超出自动隐藏 */
+            min-width: 20px;
+            overflow: hidden;           /* 溢出内容隐藏 */
+            white-space: nowrap;        /* 不换行 */
+            text-overflow: ellipsis;    /* 溢出用省略号显示 */
+            display: inline-block;
         }
 
         .variable-value {
             color: var(--vscode-debugTokenExpression-value);
             margin-left: 8px;
+            max-width: 50%;           /* 最多显示宽度，超出自动隐藏 */
+            min-width: 50px;
+            overflow: hidden;           /* 溢出内容隐藏 */
+            white-space: nowrap;        /* 不换行 */
+            text-overflow: ellipsis;    /* 溢出用省略号显示 */
+            display: inline-block;
         }
 
         .editable-value {
