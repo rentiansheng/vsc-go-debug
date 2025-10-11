@@ -1,4 +1,4 @@
-import { getBodyHtmlScript } from "./body_js";
+import { getBodyHtmlScript } from "./body/body_js";
 
 export function getBodyHtml(): string {
 return `<body>
