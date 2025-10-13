@@ -700,10 +700,7 @@ return `
                 if (!tabContent) return;
                 const watchExpressionsContainer = tabContent.querySelector('.watch-expressions');
                 if (!watchExpressionsContainer) return;
-                const emptyStateDiv = document.createElement('div');
-                emptyStateDiv.className = 'empty-state';
-                emptyStateDiv.textContent = 'No watch expressions. Add one using the "+" button.';
-                watchExpressionsContainer.appendChild(emptyStateDiv);
+                
             }
         }
 
@@ -801,10 +798,12 @@ return `
                         //editableValueSpan.textContent = input.value;
                         //editableValueSpan.setAttribute('data-value', input.value);
                     }
-
-                    // 恢复显示
-                    input.remove();
-                    editableValueSpan.style.display = 'inline';
+                    // 操作结束 
+                    if(save) {
+                        // 恢复显示
+                        input.remove();
+                        editableValueSpan.style.display = 'inline';
+                    }
                 };
 
                 // 监听键盘事件
@@ -818,7 +817,7 @@ return `
 
                 // 监听失去焦点
                 input.onblur = () => {
-                    finishEdit(true);
+                    //finishEdit(true);
                 };
             };
             return span;
@@ -864,7 +863,9 @@ return `
                 if(variableMode === variableModeWatch){
                     exprInfoDiv.innerHTML += getRowLabelSpanHTMLStr('variable-value',   expr.value || '' );
                 } else {
-                    if (expr.value.startsWith('[]') || expr.value.startsWith('map') || expr.value.startsWith('struct')) {
+                    if(expr.variablesReference && expr.variablesReference > 0) {
+                        exprInfoDiv.innerHTML += getRowLabelSpanHTMLStr('variable-value',   expr.value || '' );
+                    } else if (expr.value.startsWith('[]') || expr.value.startsWith('map') || expr.value.startsWith('struct')) {
                         exprInfoDiv.innerHTML += getRowLabelSpanHTMLStr('variable-value',   expr.value || '' );
                     } else {
                         exprInfoDiv.appendChild(getRowEditLabelSpanHTMLNode(tabName, 'variable-value editable-value', expr || '', parentReference, noDelBtn) );
@@ -1023,6 +1024,27 @@ return `
             if (!watchExpressions.has(tabName)) {
                 watchExpressions.set(tabName, []);
             }
+            const frameId = getCurrentFrameId(tabName);
+            expression = expression.trim();
+            // 以 call 方式调用，不加入watch 列表
+            if (expression.startsWith('call ')) {
+                vscode.postMessage({
+                    command: 'call_function',
+                    tabName: tabName,
+                    expression: expression,
+                    frameId: frameId || 0,
+                });
+                return;
+            }
+
+            if(expression === '') {
+                return;
+            }
+            if(expression.length > 100) {
+                showNotification('Expression too long, max 100 characters', 'error');
+                return;
+            }
+            
 
             const expressions = watchExpressions.get(tabName);
             const existingIndex = expressions.findIndex(e => e.expression === expression);

@@ -1423,7 +1423,7 @@ async function build(
 	outputChannel.appendLine(`🎯 Absolute binary path: ${absoluteBinaryPath}`);
 
 	// Step 1 & 2: Build the binary
-	outputChannel.appendLine(`\n� Step 1-2 - Building Go application...`);
+	outputChannel.appendLine(`\n Step 1-2 - Building Go application...`);
 	outputChannel.appendLine(`echo "🔨 Building Go application..."`);
 
 	const buildArgs = ['build'];

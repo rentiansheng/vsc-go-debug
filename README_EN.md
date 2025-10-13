@@ -107,8 +107,7 @@ go install github.com/go-delve/delve/cmd/dlv@latest
 
 #### Set Conditional Breakpoints
 1. Right-click on code line
-2. Select "Toggle Conditional Breakpoint"
-3. Enter condition expression (e.g., `x > 5 && y != nil`)
+
 
 #### Use Watch Expressions
 1. Switch to "Variables And Stack" view during debugging
@@ -116,6 +115,7 @@ go install github.com/go-delve/delve/cmd/dlv@latest
 3. Enter expression (e.g., `user.Name`, `len(slice)`)
 4. Click "+" button to add watch
 5. Expression values will auto-refresh
+6. Support calling functions via call
 
 #### Variable Operations
 1. **View Variables**: View all local and global variables in Variables tab

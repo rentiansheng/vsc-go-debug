@@ -111,15 +111,14 @@ go install github.com/go-delve/delve/cmd/dlv@latest
 
 #### 设置条件断点
 1. 在代码行右键
-2. 选择 "Toggle Conditional Breakpoint"
-3. 输入条件表达式（如：`x > 5 && y != nil`）
-
+ 
 #### 使用监视表达式
 1. 调试时切换到 "Variables And Stack" 视图
 2. 点击 "Watch" 标签页
 3. 输入表达式（如：`user.Name`、`len(slice)`）
 4. 点击 "+" 按钮添加监视
 5. 表达式值会自动刷新显示
+6. 支持通过 call 调用函数
 
 #### 变量操作
 1. **查看变量**：在 Variables 标签查看所有局部变量和全局变量

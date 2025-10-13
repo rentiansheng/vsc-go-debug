@@ -311,6 +311,9 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                         });
                         this._watchExpressions.set(message.tabName, _ae);
                         break;
+                    case 'call_function':
+                        this.callFunctionEvaluate(message.expression, message.frameId, message.tabName);
+                        break;
                     case 'remove_watch':
                         const _re = this._watchExpressions.get(message.tabName) || [];
                         this._watchExpressions.set(message.tabName, _re.filter(w => w.id !== message.expressionId));
@@ -430,6 +433,29 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     private async evaluateWatchExpression(expression: string, expressionId: string, frameId: number, tabName: string): Promise<void> {
         var session = this.getSession(tabName);
         this.evaluateWatchExpressionByDebugSession(expression, expressionId, frameId, session, tabName);
+    }
+
+    private callFunctionEvaluate(expression: string, frameId: number, tabName: string) {
+        try {
+            var session = this.getSession(tabName);
+            if (!session) {
+                console.warn(`[callFunctionEvaluate] No debug session found for tab: ${tabName}`);
+                return;
+            }
+            // Use DAP evaluate request to evaluate the expression
+            var response =  session.customRequest('evaluate', {
+                expression: expression,
+                frameId: frameId, // Use current frame
+                context: 'repl' // Specify this is for repl context
+            } as DebugProtocol.EvaluateArguments);
+            if (response) {
+                this.addOutput(`Function ${expression}  frame id ${frameId}`, tabName);
+                console.log(`[callFunctionEvaluate] Successfully called function: ${expression}`, response);     
+            } 
+        } catch (error: any) {
+            this.addOutput(`❌ Function ${expression}  frame id ${frameId} result: ${error.message}`, tabName);
+            console.error(`[callFunctionEvaluate] Error calling function ${expression}:`, error);
+        }
     }
 
     private async evaluateWatchExpressionByDebugSession(expression: string, expressionId: string, frameId: number, session: vscode.DebugSession | null, tabName: string): Promise<void> {
