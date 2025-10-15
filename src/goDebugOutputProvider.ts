@@ -435,23 +435,28 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         this.evaluateWatchExpressionByDebugSession(expression, expressionId, frameId, session, tabName);
     }
 
-    private callFunctionEvaluate(expression: string, frameId: number, tabName: string) {
+    private async callFunctionEvaluate(expression: string, frameId: number, tabName: string) {
         try {
             var session = this.getSession(tabName);
             if (!session) {
                 console.warn(`[callFunctionEvaluate] No debug session found for tab: ${tabName}`);
                 return;
             }
+            var cmdStr = 'evaluate';
+
             // Use DAP evaluate request to evaluate the expression
-            var response =  session.customRequest('evaluate', {
+            var response = await session.customRequest(cmdStr, {
                 expression: expression,
                 frameId: frameId, // Use current frame
                 context: 'repl' // Specify this is for repl context
             } as DebugProtocol.EvaluateArguments);
-            if (response) {
-                this.addOutput(`Function ${expression}  frame id ${frameId}`, tabName);
-                console.log(`[callFunctionEvaluate] Successfully called function: ${expression}`, response);     
-            } 
+            if (response.error) {
+                this.addOutput(`❌ Function ${expression}  frame id ${frameId} result: ${response.error}`, tabName);
+            } else {
+                this.addOutput(`✅ Function ${expression}  frame id ${frameId} result: executed successfully`, tabName);
+            }
+          
+    
         } catch (error: any) {
             this.addOutput(`❌ Function ${expression}  frame id ${frameId} result: ${error.message}`, tabName);
             console.error(`[callFunctionEvaluate] Error calling function ${expression}:`, error);
@@ -507,6 +512,8 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
 
     }
+
+ 
 
     private _sendWatchExpressionResult(tabName: string, expressionId: string, value: string, error: string | null, variablesReference: number): void {
         if (this._view) {
@@ -847,7 +854,15 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
      */
     private async handleGotoSource(filePath: string, line: number, column?: number): Promise<void> {
         try {
-            // 检查文件是否存在
+            
+            // 检查文件是否存在,
+            if(!filePath.startsWith("file://") && !path.isAbsolute(filePath)){
+                // 获取工作区根路径
+                const workspaceFolders = vscode.workspace.workspaceFolders;
+                if (workspaceFolders &&  workspaceFolders.length === 1) {
+                    filePath = path.join(workspaceFolders[0].uri.fsPath, filePath);
+                }
+            }
             if (!fs.existsSync(filePath)) {
                 vscode.window.showErrorMessage(`文件不存在: ${filePath}`);
                 return;
@@ -915,11 +930,12 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
 
             try {
                 // 使用现有的封装函数执行调试/运行
-                await runDebugConfiguration(config, sessionType);
-
-                console.log(`[executeRun] Successfully started ${sessionType} for ${tabName}`);
-                this.globalStateManager.setState(tabName, sessionType, 'running');
-                this.addOutput(`✅ Successfully started ${sessionType} session: ${tabName}`, tabName);
+                const result = await runDebugConfiguration(config, sessionType);
+                if (result) {
+                    console.log(`[executeRun] Successfully started ${sessionType} for ${tabName}`);
+                    this.globalStateManager.setState(tabName, sessionType, 'running');
+                    this.addOutput(`✅ Successfully started ${sessionType} session: ${tabName}`, tabName);
+                }
             } catch (error) {
                 console.error(`[executeRun] Error starting ${sessionType} for ${tabName}:`, error);
                 this.globalStateManager.setState(tabName, sessionType, 'stopped');

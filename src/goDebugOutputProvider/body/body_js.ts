@@ -3,7 +3,14 @@ import { getTabControlHtml } from "./tab_control";
 export function getBodyHtmlScript(): string {
 return ` 
  
-        
+        function goSourceFile(filePath, line, column) {
+             vscode.postMessage({
+                command: 'gotoSource',
+                path: filePath,
+                line: line,
+                column: column
+            });
+        }
         ${getTabControlHtml()}
 
 

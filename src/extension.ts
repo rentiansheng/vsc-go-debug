@@ -14,6 +14,7 @@ import { GoDebugOutputProvider } from './goDebugOutputProvider';
 import { GlobalStateManager } from './globalStateManager';
 import { DelveClient } from './delveClient';
 import * as dap from './dap';
+import { config } from 'process';
 
 
 interface RunningConfig {
@@ -370,7 +371,7 @@ async function saveConfigurationToLaunchJson(config: vscode.DebugConfiguration, 
 }
 
 // Helper function to run debug configurations with run or debug mode
-export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debug'): Promise<void> {
+export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debug'): Promise<Boolean> {
 	const outputChannel = vscode.window.createOutputChannel('Go Debug Pro');
 
 
@@ -385,7 +386,7 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 			const errorMsg = 'No workspace folder found';
 			outputChannel.appendLine(`❌ Error: ${errorMsg}`);
 			vscode.window.showErrorMessage(errorMsg);
-			return;
+			return false;
 		}
 
 		outputChannel.appendLine(`📁 Workspace: ${workspaceFolder.uri.fsPath}`);
@@ -486,7 +487,7 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 			const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
 			if (!workspaceFolder) {
 				outputChannel.appendLine(`❌ No workspace folder found`);
-				return;
+				return false;
 			}
 			
 			try {
@@ -499,6 +500,7 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 			} catch (error) {
 				outputChannel.appendLine(`❌ Execution failed: ${error}`);
 				vscode.window.showErrorMessage(`Execution failed: ${error}`);
+				return false;
 			}
 
 
@@ -517,13 +519,16 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 			} catch (error) {
 				outputChannel.appendLine(`❌ Debug execution failed: ${error}`);
 				vscode.window.showErrorMessage(`Debug execution failed: ${error}`);
+				return false;
 			}
 		}
 	} catch (error) {
 		const errorMsg = `Error running configuration: ${error}`;
 		outputChannel.appendLine(`❌ ${errorMsg}`);
 		vscode.window.showErrorMessage(errorMsg);
+		return false;
 	}
+	return true;
 }
 
 // Helper function to generate equivalent Go command
@@ -1277,7 +1282,10 @@ async function executeCompileAndDlvDebug(
 		const absoluteBinaryPath = path.join(tempDir, outputBinary);
 
 		await build(workspaceFolder, absoluteBinaryPath, runConfig, safeOriginalConfig, 'debug', outputChannel);
-
+		if(!fs.existsSync(absoluteBinaryPath)) {
+ 			stateManager.stopConfig(safeOriginalConfig.name);
+			return ;
+		}
 
 
 		// Step 3: Start delve in headless mode for remote debugging
@@ -1498,7 +1506,27 @@ async function build(
 			const lines = error.split('\n');
 			lines.forEach((line: string) => {
 				if (line.trim()) {
-					globalGoDebugOutputProvider!.addOutput(`❌ Build Error: ${line}`, safeOriginalConfig.name);
+					if ((line.includes("syntax error") || line.includes("no required module provides")) && line.includes(".go")) {
+						// 跳转到对应的文件和行号
+						const columns = line.split(":");
+						var filePath = columns[0];
+						const lineNumber = parseInt(columns[1], 10) || 0;
+						var colNumber = 0;
+						if(columns.length > 2 && columns[2]) {
+							// 不是数字时候，默认0
+							colNumber = parseInt(columns[2], 10) || 0;
+						}
+						if(safeOriginalConfig.program && safeOriginalConfig.program !== ""	) {
+							filePath = path.join(safeOriginalConfig.program, filePath);
+ 						}
+						
+						line  = `<span onClick="goSourceFile('${filePath}', ${lineNumber}, ${colNumber})" class="output-content-line-link">${line}</span>`;
+
+					 
+						globalGoDebugOutputProvider!.addOutput(`❌ Build Error: ${line}`, safeOriginalConfig.name);
+					} else {
+						globalGoDebugOutputProvider!.addOutput(`❌ Build Error: ${line}`, safeOriginalConfig.name);
+					}
 				}
 			});
 		}

@@ -799,7 +799,12 @@ return ` /* VS Code icon symbols - using Unicode characters that work in VS Code
             color: var(--vscode-editor-selectionForeground) !important;
         }
 
-       
+        .output-content-line-link {
+            color: #1976d2;
+            text-decoration: underline;
+            cursor: pointer;
+        }
+
        `;
 
 }
