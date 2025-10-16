@@ -572,6 +572,7 @@ return ` /* VS Code icon symbols - using Unicode characters that work in VS Code
         .variable-type {
             color: var(--vscode-debugTokenExpression-type);
             font-style: italic;
+            overflow: hidden;
             margin-left: 4px;
         }
 

@@ -6,15 +6,13 @@ import * as os from 'os';
 import * as cp from 'child_process';
 
 import { DebugConfigurationProvider } from './debugConfigProvider';
-import { RunConfigurationManager } from './runConfigManager';
-import { RunConfigWebviewProvider } from './runConfigWebview';
-import { GoDebugConfigurationProvider as GoDebugConfigProvider } from './goDebugConfigurationProvider';
 import { ConfigurationEditorProvider } from './configurationEditorProvider';
 import { GoDebugOutputProvider } from './goDebugOutputProvider';
 import { GlobalStateManager } from './globalStateManager';
-import { DelveClient } from './delveClient';
+import { GoClient } from './go';
 import * as dap from './dap';
 import { config } from 'process';
+import { GoDebugConfiguration } from './goDebugConfigurationProvider';
 
 
 interface RunningConfig {
@@ -144,7 +142,7 @@ class ConfigurationStateManager {
 		}
 
 		// Check if process is still alive
-		if (config.process.killed || config.process.exitCode !== null) {
+		if ((!config.process || config.process.killed || config.process.exitCode !== null) && (!config.debugSession)) {
 			//this.runningConfigs.delete(configName);
 			return false;
 		}
@@ -371,7 +369,7 @@ async function saveConfigurationToLaunchJson(config: vscode.DebugConfiguration, 
 }
 
 // Helper function to run debug configurations with run or debug mode
-export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debug'): Promise<Boolean> {
+export async function runDebugConfiguration(configItem: GoDebugConfiguration, mode: 'run' | 'debug'): Promise<Boolean> {
 	const outputChannel = vscode.window.createOutputChannel('Go Debug Pro');
 
 
@@ -381,16 +379,7 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 		outputChannel.appendLine(`Time: ${new Date().toLocaleString()}`);
 		outputChannel.appendLine(`Mode: ${mode.toUpperCase()}`);
 
-		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-		if (!workspaceFolder) {
-			const errorMsg = 'No workspace folder found';
-			outputChannel.appendLine(`❌ Error: ${errorMsg}`);
-			vscode.window.showErrorMessage(errorMsg);
-			return false;
-		}
-
-		outputChannel.appendLine(`📁 Workspace: ${workspaceFolder.uri.fsPath}`);
-
+		 
 		// Get the configuration from the item safely
 		let config;
 		if (configItem.configuration) {
@@ -403,26 +392,13 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 			// Fallback - try to use the item directly
 			config = configItem;
 		}
+		outputChannel.appendLine(`📁 Workspace: ${config.vscWorkspaceFolder}`);
+
 		config.mode = mode.toLocaleLowerCase();
 		const stateManager = ConfigurationStateManager.getInstance();
-		stateManager.setConfigRunning(config.name, config);
+		stateManager.setConfigRunning(config.itemName, config);
 		// Create a safe copy of the configuration to avoid circular references
-		const safeOriginalConfig = {
-			name: config.name,
-			type: config.type,
-			request: config.request,
-			mode: config.mode,
-			program: config.program,
-			cwd: config.cwd,
-			stopOnEntry: config.stopOnEntry,
-			...(config.args && config.args.length > 0 && { args: config.args }),
-			...(config.env && Object.keys(config.env).length > 0 && { env: config.env }),
-			...(config.buildFlags && { buildFlags: config.buildFlags }),
-			...(config.trace && { trace: config.trace }),
-			...(config.go_root && { go_root: config.go_root }),
-			...(config.go_path && { go_path: config.go_path }),
-			...(config.dlvFlags && { dlvFlags: config.dlvFlags })
-		};
+		const safeOriginalConfig = { ... config } as GoDebugConfiguration;
 
 		outputChannel.appendLine(`\n📋 Original Configuration:`);
 		outputChannel.appendLine(`   Name: ${safeOriginalConfig.name || 'Unknown'}`);
@@ -441,41 +417,28 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 			}
 		}
 
-		// Clone the configuration to avoid modifying the original
-		const runConfig = { ...safeOriginalConfig };
+	 
 
 		outputChannel.appendLine(`\n🔧 Pre-execution Actions:`);
 
 		// Modify configuration based on mode
 		if (mode === 'run') {
 			outputChannel.appendLine(`   • Setting stopOnEntry = false (run mode)`);
-			runConfig.stopOnEntry = false;
-			outputChannel.appendLine(`   • Modified name to: "${runConfig.name}"`);
+			safeOriginalConfig.stopOnEntry = false;
+			outputChannel.appendLine(`   • Modified name to: "${safeOriginalConfig.name}"`);
 		} else {
 			outputChannel.appendLine(`   • Setting stopOnEntry = true (debug mode)`);
-			runConfig.stopOnEntry = true;
-			outputChannel.appendLine(`   • Modified name to: "${runConfig.name}"`);
+			safeOriginalConfig.stopOnEntry = true;
+			outputChannel.appendLine(`   • Modified name to: "${safeOriginalConfig.name}"`);
 		}
 
 		outputChannel.appendLine(`\n📋 Final Configuration to Execute:`);
-		const safeConfig = {
-			name: runConfig.name,
-			type: runConfig.type,
-			request: runConfig.request,
-			mode: runConfig.mode,
-			program: runConfig.program,
-			cwd: runConfig.cwd,
-			stopOnEntry: runConfig.stopOnEntry,
-			...(runConfig.args && runConfig.args.length > 0 && { args: runConfig.args }),
-			...(runConfig.env && Object.keys(runConfig.env).length > 0 && { env: runConfig.env }),
-			...(runConfig.buildFlags && { buildFlags: runConfig.buildFlags }),
-			...(runConfig.trace && { trace: runConfig.trace })
-		};
-		outputChannel.appendLine(JSON.stringify(safeConfig, null, 2));
+ 
+		outputChannel.appendLine(JSON.stringify(safeOriginalConfig, null, 2));
 
 		// Generate equivalent command line
 		outputChannel.appendLine(`\n💻 Equivalent Command Line:`);
-		const goCommand = generateGoCommand(runConfig, mode);
+		const goCommand = generateGoCommand(safeOriginalConfig, mode);
 		outputChannel.appendLine(`   ${goCommand}`);
 
 		outputChannel.appendLine(`\n🚀 Starting ${mode} session...`);
@@ -484,7 +447,7 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 		if (mode === 'run') {
 			// For run mode, use outputChannel only
 			outputChannel.appendLine(`📦 Running in background (no terminal)...`);
-			const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+			const workspaceFolder = config.vscWorkspaceFolder;
 			if (!workspaceFolder) {
 				outputChannel.appendLine(`❌ No workspace folder found`);
 				return false;
@@ -492,8 +455,7 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 			
 			try {
 				await executeRunWithDedicatedTerminal(
-					workspaceFolder,
-					runConfig,
+ 					config,
 					safeOriginalConfig,
 					outputChannel
 				);
@@ -511,8 +473,7 @@ export async function runDebugConfiguration(configItem: any, mode: 'run' | 'debu
 
 			try {
 				await executeCompileAndDlvDebug(
-					workspaceFolder,
-					runConfig,
+					config,
 					safeOriginalConfig,
 					outputChannel
 				);
@@ -698,8 +659,9 @@ async function createConfigurationForCurrentFile(context: vscode.ExtensionContex
 		mode: 'debug' as const,
 		program: filePath,
 		cwd: workspaceFolder.uri.fsPath,
-		runMode: 'file' as const
-	};
+		runMode: 'file' as const,
+		vscWorkspaceFolder: workspaceFolder.uri.fsPath,
+	} as GoDebugConfiguration;
 
 	// Open configuration editor with the template
 	ConfigurationEditorProvider.showConfigurationEditor(context, configTemplate, false);
@@ -773,9 +735,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// Initialize managers
  	const debugConfigProvider = new DebugConfigurationProvider();
 	globalDebugConfigProvider = debugConfigProvider; // Set global reference
-	const runConfigManager = new RunConfigurationManager();
-	const goDebugConfigProvider = new GoDebugConfigProvider();
- 
+   
 	activationChannel.appendLine('✅ Data providers initialized successfully');
 
 	// Register tree view for debug configurations
@@ -785,7 +745,7 @@ export function activate(context: vscode.ExtensionContext) {
 	});
  
 	// Register Go Debug Output Panel webview provider
-	const goDebugOutputProvider = new GoDebugOutputProvider(context.extensionUri);
+	const goDebugOutputProvider = new GoDebugOutputProvider(context.extensionUri, debugConfigProvider);
 	globalGoDebugOutputProvider = goDebugOutputProvider; // Set global reference
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider('goDebugOutput', goDebugOutputProvider, {
@@ -793,14 +753,6 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 	activationChannel.appendLine('✅ Go Debug Output webview provider registered');
-
-
-	// Register the enhanced debug configuration provider for Run and Debug panel
-	context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider('go-debug-pro', goDebugConfigProvider));
-
-	// Register legacy debug configuration provider
-	const provider = new LegacyGoDebugConfigurationProvider();
-	context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider('go-debug-pro', provider));
 
  
 
@@ -853,48 +805,8 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
-	// Run Configuration Management Commands
-	context.subscriptions.push(
-		vscode.commands.registerCommand('goDebugPro.refreshRunConfigs', () => {
-			runConfigManager.refresh();
-		})
-	);
-
-	context.subscriptions.push(
-		vscode.commands.registerCommand('goDebugPro.createNewRunConfig', async () => {
-			await runConfigManager.createNewConfiguration();
-		})
-	);
-
-	context.subscriptions.push(
-		vscode.commands.registerCommand('goDebugPro.showRunConfigDetails', (item) => {
-			RunConfigWebviewProvider.showConfigDetails(context, item);
-		})
-	);
-
-	context.subscriptions.push(
-		vscode.commands.registerCommand('goDebugPro.editRunConfiguration', async (item) => {
-			await runConfigManager.editConfiguration(item);
-		})
-	);
-
-	context.subscriptions.push(
-		vscode.commands.registerCommand('goDebugPro.duplicateRunConfiguration', async (item) => {
-			await runConfigManager.duplicateConfiguration(item);
-		})
-	);
-
-	context.subscriptions.push(
-		vscode.commands.registerCommand('goDebugPro.deleteRunConfiguration', async (item) => {
-			await runConfigManager.deleteConfiguration(item);
-		})
-	);
-
-	context.subscriptions.push(
-		vscode.commands.registerCommand('goDebugPro.runDebugConfiguration', async (item) => {
-			await runConfigManager.runConfiguration(item);
-		})
-	);
+ 
+ 
 
 	// Configuration Editor Commands
 	context.subscriptions.push(
@@ -929,12 +841,7 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
-	context.subscriptions.push(
-		vscode.commands.registerCommand('goDebugPro.createConfigurationFromProvider', async () => {
-			await goDebugConfigProvider.createNewConfiguration();
-		})
-	);
-
+ 
  
  
  
@@ -987,10 +894,11 @@ Recent debugging sessions and configuration details are logged to the output cha
 					return;
 				}
 
+				 
 				// Update the running configuration with the debug session
-				const configName = session.configuration?.name;
-				if (configName) {
-					const runningConfig = stateManager.getConfigState(configName);
+				const tabName = session.configuration.itemName;
+				if (tabName) {
+					const runningConfig = stateManager.getConfigState(tabName);
 					if (!runningConfig) {
 						return;
 					}
@@ -1003,16 +911,16 @@ Recent debugging sessions and configuration details are logged to the output cha
 
 					// Update the running config with the debug session
 					runningConfig.debugSession = session;
-					stateManager.setConfigRunning(configName, runningConfig);
+					stateManager.setConfigRunning(tabName, runningConfig);
 
 				}
 
 				// Create a tab for this configuration in the output panel
-				if (globalGoDebugOutputProvider && session.configuration?.name) {
-					globalGoDebugOutputProvider.createTab(session.configuration.name);
+				if (globalGoDebugOutputProvider ) {
+					globalGoDebugOutputProvider.createTab(tabName);
 					globalGoDebugOutputProvider.addOutput(
 						`🚀 Debug session started for: ${session.configuration.name}`,
-						session.configuration.name
+						tabName
 					);
 
 					// Show the Go Debug output panel and focus on it
@@ -1031,18 +939,14 @@ Recent debugging sessions and configuration details are logged to the output cha
 		vscode.debug.onDidTerminateDebugSession((session) => {
 			if (session.type === 'go-debug-pro' || session.type === 'go') {
 				console.log('Go Debug Pro session terminated');
- 				if (!session.configuration || !session.configuration.name) {
-					// No configuration name, cannot proceed
-					console.warn('Terminated session has no configuration name');
-					return;
-				}
+		 
 				// Find and update the running configuration
-				const configName = session.configuration?.name;
-				if (configName) {
-					const runningConfig = stateManager.getConfigState(configName);
+				const tabName = session.configuration.itemName;
+				if (tabName) {
+					const runningConfig = stateManager.getConfigState(tabName);
 					if (runningConfig && runningConfig.debugSession && runningConfig.debugSession.id === session.id) {
 							// Stop the configuration
-						stateManager.setConfigStopped(configName);
+						stateManager.setConfigStopped(tabName);
 						// Clear the debug session reference
 						runningConfig.debugSession = undefined;
 					
@@ -1050,12 +954,12 @@ Recent debugging sessions and configuration details are logged to the output cha
 				}
 
 				// Add termination message to the tab
-				if (globalGoDebugOutputProvider && session.configuration?.name) {
+				if (globalGoDebugOutputProvider) {
 					globalGoDebugOutputProvider.addOutput(
 						`🛑 Debug session terminated for: ${session.configuration.name}`,
-						session.configuration.name
+						tabName
 					);
-					globalGoDebugOutputProvider.cleanDebugInfo(session.configuration?.name);
+					globalGoDebugOutputProvider.cleanDebugInfo(tabName);
 				}
 			}
 		})
@@ -1070,14 +974,7 @@ Recent debugging sessions and configuration details are logged to the output cha
 		vscode.debug.registerDebugAdapterDescriptorFactory('go-debug-pro', goDebugAdapterFactory)
 	);
 
-
-	// Initialize configurations for the debug output panel
-	setTimeout(() => {
-		if (globalGoDebugOutputProvider) {
-			globalGoDebugOutputProvider.refreshConfigurations();
-			// Don't create any default output - let it start empty
-		}
-	}, 1000);
+ 
 	
 	activationChannel.appendLine('✅ Go Debug Pro Extension Activation Completed Successfully');
 	
@@ -1147,51 +1044,7 @@ class GoDebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory {
 	}
 }
 
-// Debug Configuration Provider (Legacy)
-class LegacyGoDebugConfigurationProvider implements vscode.DebugConfigurationProvider {
-
-	resolveDebugConfiguration(folder: vscode.WorkspaceFolder | undefined, config: vscode.DebugConfiguration, token?: vscode.CancellationToken): vscode.ProviderResult<vscode.DebugConfiguration> {
-
-		// If launch.json is missing or empty
-		// TODO: delete
-		if (!config.type && !config.request && !config.name) {
-			const editor = vscode.window.activeTextEditor;
-			if (editor && editor.document.languageId === 'go') {
-				config.type = 'go-debug-pro';
-				config.name = 'Launch Go Program';
-				config.request = 'launch';
-				config.program = editor.document.fileName;
-			}
-		}
-
-		if (!config.program) {
-			return vscode.window.showInformationMessage("Cannot find a program to debug").then(_ => {
-				return undefined;	// abort launch
-			});
-		}
-
-		// 确保为 DAP 模式设置正确的配置
-		// 检查是否有对应的运行配置，如果有，使用其二进制路径
-		const configName = config.name;
-		if (configName) {
-			const debugServerInfo = globalRunningDebugServers.get(configName);
-			if (debugServerInfo) {
-				// 获取运行配置信息
-				const runningConfig = getConfigurationStateManager().getConfigState(configName);
-				if (runningConfig && runningConfig.binaryPath) {
-					// 设置二进制文件路径用于 DAP
-					config.program = runningConfig.binaryPath;
-					config.mode = 'exec';  // 告诉 delve 这是一个已编译的二进制文件
-					config.debugAdapter = 'dlv-dap'; // 使用 DAP 模式
-					console.log(`🔧 Setting DAP config program to: ${config.program}`);
-				}
-			}
-		}
-
-		return config;
-	}
-}
-
+ 
 
 // Helper function to restart a configuration
 async function restartConfiguration(
@@ -1200,7 +1053,7 @@ async function restartConfiguration(
 	stateManager: ConfigurationStateManager,
 	debugConfigProvider: any
 ): Promise<void> {
-	const configName = item.configuration.name;
+	const configName = item.configuration.itemName;
 
 	// First terminate the existing process
 	const terminated = stateManager.stopConfig(configName);
@@ -1227,7 +1080,7 @@ export async function terminateConfiguration(
 	stateManager: ConfigurationStateManager,
 	debugConfigProvider: any
 ): Promise<void> {
-	const configName = item.configuration.name;
+	const configName = item.configuration.itemName;
 
 	const state = stateManager.getConfigState(configName);
 
@@ -1254,16 +1107,15 @@ export function deactivate() { }
 
 // Helper function to execute compile-first then dlv remote debug workflow
 async function executeCompileAndDlvDebug(
-	workspaceFolder: vscode.WorkspaceFolder,
-	runConfig: any,
-	safeOriginalConfig: any,
+	runConfig: GoDebugConfiguration,
+	safeOriginalConfig: GoDebugConfiguration,
 	outputChannel: vscode.OutputChannel
 ): Promise<void> {
 	const stateManager = ConfigurationStateManager.getInstance();
 
 	// Log session start with detailed timing
 	DebugLogger.info(`Starting compile-first dlv debug workflow for: ${safeOriginalConfig.name}`, outputChannel);
-	DebugLogger.info(`Workspace: ${workspaceFolder.uri.fsPath}`, outputChannel);
+	DebugLogger.info(`Workspace: ${safeOriginalConfig.vscWorkspaceFolder}`, outputChannel);
 
 	// Add a marker to indicate new debug session
 	outputChannel.appendLine(`\n🔨 Starting compile-first debug workflow for: ${safeOriginalConfig.name}`);
@@ -1271,7 +1123,7 @@ async function executeCompileAndDlvDebug(
 
 	try {
 		// Step 1: Determine source directory and binary details
-		let sourceDir = workspaceFolder.uri.fsPath;
+		let sourceDir = safeOriginalConfig.vscWorkspaceFolder;
 		let sourcePath = '.';
 		let binaryBaseName = 'main';
 
@@ -1281,9 +1133,12 @@ async function executeCompileAndDlvDebug(
 		const outputBinary = `${binaryBaseName}-run-${timestamp}`;
 		const absoluteBinaryPath = path.join(tempDir, outputBinary);
 
-		await build(workspaceFolder, absoluteBinaryPath, runConfig, safeOriginalConfig, 'debug', outputChannel);
+		const goClient = new GoClient(safeOriginalConfig.goPath, safeOriginalConfig.goRoot);
+
+
+		await goClient.build(absoluteBinaryPath, safeOriginalConfig, 'debug', outputChannel);
 		if(!fs.existsSync(absoluteBinaryPath)) {
- 			stateManager.stopConfig(safeOriginalConfig.name);
+ 			stateManager.stopConfig(safeOriginalConfig.itemName);
 			return ;
 		}
 
@@ -1294,25 +1149,10 @@ async function executeCompileAndDlvDebug(
 		// Determine working directory
 		let workingDir = sourceDir;
 		if (runConfig.cwd) {
-			workingDir = runConfig.cwd.replace('${workspaceFolder}', workspaceFolder.uri.fsPath);
+			workingDir = runConfig.cwd.replace('${workspaceFolder}', safeOriginalConfig.vscWorkspaceFolder || '');
 			outputChannel.appendLine(`📂 Working directory: ${workingDir}`);
 		}
-		// Prepare environment variables
-		const execEnv = { ...process.env };
-
-
-
-		const delveClient = new DelveClient("", "");
-
-
-
-	 
-
-		// program: string, runName: string, args: string[], workingDir: string, execEnv: NodeJS.ProcessEnv
-		//await delveClient.start(absoluteBinaryPath, safeOriginalConfig.name, safeOriginalConfig.args || [], safeOriginalConfig.cwd, safeOriginalConfig.env);
-
-		//stateManager.setConfigDlvClient(safeOriginalConfig.name, delveClient);
-
+ 
  
 		const debugConfig = {
 			//type: 'go',
@@ -1322,20 +1162,26 @@ async function executeCompileAndDlvDebug(
 			request: 'launch',
 			mode: "exec", // Use 'exec' mode for compiled binary
 			stopOnEntry: false, // Always stop on entry for debug mode
-			dlvToolPath: delveClient.getDlvExecutablePath(),
-			dlvMode: delveClient.getDlvMode(),
+			dlvToolPath: goClient.getDlvExecutablePath(),
+			dlvMode: goClient.getDlvMode(),
 			dlvFlags: runConfig.dlvFlags || [],
 			program: absoluteBinaryPath,
 			args: safeOriginalConfig.args || [],
 			env: safeOriginalConfig.env || {},
-			cwd: safeOriginalConfig.cwd || workspaceFolder.uri.fsPath,
-			noCheckGoVersion: true, // Skip Go version check to avoid delays
+			cwd: safeOriginalConfig.cwd || safeOriginalConfig.vscWorkspaceFolder,
+			configuration: safeOriginalConfig,
+			itemName: safeOriginalConfig.itemName,
 
 		};
 
 		var sessionOpt: vscode.DebugSessionOptions = {
 			 suppressDebugView: true
 		};
+		// vscode folder 
+		const workspaceFolder = vscode.workspace.workspaceFolders?.find(folder => folder.uri.fsPath === safeOriginalConfig.vscWorkspaceFolder);
+		if (!workspaceFolder) {
+			throw new Error('Workspace folder not found');
+		}
 		const success = await vscode.debug.startDebugging(workspaceFolder, debugConfig, sessionOpt);
 		if (!success) {
 			throw new Error('Failed to start debug session');
@@ -1349,242 +1195,33 @@ async function executeCompileAndDlvDebug(
 		if (globalGoDebugOutputProvider) {
 			globalGoDebugOutputProvider.addOutput(
 				`❌ ${errorMsg}`,
-				safeOriginalConfig.name
+				safeOriginalConfig.itemName
 			);
 		}
 
-		stateManager.setConfigStopped(safeOriginalConfig.name);
+		stateManager.setConfigStopped(safeOriginalConfig.itemName);
 		// Clean up debug server info on error
-		globalRunningDebugServers.delete(safeOriginalConfig.name);
+		globalRunningDebugServers.delete(safeOriginalConfig.itemName);
 
 		//vscode.window.showErrorMessage(errorMsg);
 		throw error;
 	}
 }
 
-// Helper function to get or create a dedicated terminal for a configuration
-
-
-
-function getGoBinaryPath(goRoot: string): string {
-	if (goRoot) {
-		const goBinary = path.join(goRoot, 'bin', process.platform === 'win32' ? 'go.exe' : 'go');
-		if (fs.existsSync(goBinary)) {
-			return goBinary;
-		}
-	}
-	let goPath = 'go';
-	if (process.platform === 'win32') {
-		goPath = 'go.exe';
-	}
-	if (process.env.GOROOT) {
-		const goBinary = path.join(process.env.GOROOT, 'bin', goPath);
-		if (fs.existsSync(goBinary)) {
-			return goBinary;
-		}
-	}
-	return goPath;
  
-}
 
-async function build(
-	workspaceFolder: vscode.WorkspaceFolder,
-	absoluteBinaryPath: string,
-	runConfig: any,
-	safeOriginalConfig: any,
-	mode: 'run' | 'debug',
-	outputChannel: vscode.OutputChannel
-
-) {
-	// Determine source directory and binary details
-	let sourceDir = workspaceFolder.uri.fsPath;
-	let sourcePath = '.';
-
-	if (runConfig.program) {
-		let programPath = runConfig.program;
-
-		// Handle ${workspaceFolder} replacement
-		if (programPath.includes('${workspaceFolder}')) {
-			programPath = programPath.replace('${workspaceFolder}', workspaceFolder.uri.fsPath);
-		}
-
-		// If program path is relative, make it absolute
-		if (!path.isAbsolute(programPath)) {
-			programPath = path.resolve(workspaceFolder.uri.fsPath, programPath);
-		}
-
-		// Determine source directory (where we'll run go build)
-		if (programPath.endsWith('.go')) {
-			// Single file: /path/to/main.go -> /path/to
-			sourceDir = path.dirname(programPath);
-			sourcePath = path.basename(programPath);
-		} else {
-			// Package/directory: /path/to/cmd/myapp -> /path/to/cmd/myapp
-			sourceDir = programPath;
-			sourcePath = '.';
-		}
-	}
-
-
-	outputChannel.appendLine(`📂 Source directory: ${sourceDir}`);
-	outputChannel.appendLine(`📄 Source path: ${sourcePath}`);
-	outputChannel.appendLine(`🎯 Absolute binary path: ${absoluteBinaryPath}`);
-
-	// Step 1 & 2: Build the binary
-	outputChannel.appendLine(`\n Step 1-2 - Building Go application...`);
-	outputChannel.appendLine(`echo "🔨 Building Go application..."`);
-
-	const buildArgs = ['build'];
-	if (mode === 'debug') {
-		// 没有 -N -l 参数， 新加 
-		const hasNoOpt = buildArgs.some(arg => arg.includes('-gcflags')) ;
-		if (!hasNoOpt) {
-			buildArgs.push('-gcflags="all=-N -l"');
-		}
-	}
-
-	// Add build flags if any
-	if (runConfig.buildFlags) {
-		buildArgs.push(...runConfig.buildFlags.split(' ').filter((flag: string) => flag.trim()));
-		outputChannel.appendLine(`🔧 Added build flags: ${runConfig.buildFlags}`);
-	}
-
-	// Add output and source
-	buildArgs.push('-o', absoluteBinaryPath, sourcePath);
-
-	const buildCommand = buildArgs.join(' ');
- 
-	// Execute build process
-	const buildStartTime = Date.now();
-	DebugLogger.info(`Starting RUN build process with command: go ${buildCommand}`, outputChannel);
-	DebugLogger.info(`RUN build process starting at: ${new Date().toISOString()}`, outputChannel);
-
-	// Create tab for this configuration in the output panel early
-	if (globalGoDebugOutputProvider) {
-		globalGoDebugOutputProvider.createTab(safeOriginalConfig.name);
-		globalGoDebugOutputProvider.addOutput(
-			`🔨 Starting build for: ${safeOriginalConfig.name}`,
-			safeOriginalConfig.name
-		);
-
-		// Show the Go Debug output panel and focus on it
-		vscode.commands.executeCommand('workbench.view.extension.goDebugPanel').then(() => {
-			// Small delay to ensure panel is shown before focusing the view
-			setTimeout(() => {
-				vscode.commands.executeCommand('goDebugOutput.focus');
-			}, 100);
-		});
-	}
-	const goBinary = getGoBinaryPath(runConfig.go_root);
-	GoDebugOutputProvider.Output(`Using Go binary: ${goBinary} ${buildArgs.join(' ')}`, safeOriginalConfig.name);
-	const buildProcess = cp.exec(`"${goBinary}" ${buildArgs.join(' ')}`, {
-		cwd: sourceDir,
-		env: { ...process.env, ...(runConfig.env || {}) }
-	});
-
-	buildProcess.stdout?.on('data', (data) => {
-		const output = data.toString();
-		outputChannel.append(output);
-
-		// Send build output to the dedicated tab
-		if (globalGoDebugOutputProvider) {
-			const lines = output.split('\n');
-			lines.forEach((line: string) => {
-				if (line.trim()) {
-					globalGoDebugOutputProvider!.addOutput(`🔨 ${line}`, safeOriginalConfig.name);
-				}
-			});
-		}
-	});
-
-	buildProcess.stderr?.on('data', (data) => {
-		const error = data.toString();
-		outputChannel.append(error);
-
-		// Send build errors to the dedicated tab
-		if (globalGoDebugOutputProvider) {
-			const lines = error.split('\n');
-			lines.forEach((line: string) => {
-				if (line.trim()) {
-					if ((line.includes("syntax error") || line.includes("no required module provides")) && line.includes(".go")) {
-						// 跳转到对应的文件和行号
-						const columns = line.split(":");
-						var filePath = columns[0];
-						const lineNumber = parseInt(columns[1], 10) || 0;
-						var colNumber = 0;
-						if(columns.length > 2 && columns[2]) {
-							// 不是数字时候，默认0
-							colNumber = parseInt(columns[2], 10) || 0;
-						}
-						if(safeOriginalConfig.program && safeOriginalConfig.program !== ""	) {
-							filePath = path.join(safeOriginalConfig.program, filePath);
- 						}
-						
-						line  = `<span onClick="goSourceFile('${filePath}', ${lineNumber}, ${colNumber})" class="output-content-line-link">${line}</span>`;
-
-					 
-						globalGoDebugOutputProvider!.addOutput(`❌ Build Error: ${line}`, safeOriginalConfig.name);
-					} else {
-						globalGoDebugOutputProvider!.addOutput(`❌ Build Error: ${line}`, safeOriginalConfig.name);
-					}
-				}
-			});
-		}
-	});
-
-	await new Promise<void>((resolve, reject) => {
-		buildProcess.on('exit', (code) => {
-			const buildDuration = Date.now() - buildStartTime;
-			if (code === 0) {
-				DebugLogger.info(`RUN build completed successfully in ${buildDuration}ms`, outputChannel);
-				outputChannel.appendLine(`✅ Build completed successfully`);
-
-				// Send build success to the dedicated tab
-				if (globalGoDebugOutputProvider) {
-					globalGoDebugOutputProvider.addOutput(
-						`✅ Build completed successfully in ${buildDuration}ms`,
-						safeOriginalConfig.name
-					);
-				}
-				resolve();
-			} else {
-				const errorMsg = `Build failed with exit code ${code}`;
-				outputChannel.appendLine(`❌ ${errorMsg}`);
-
-				// Send build failure to the dedicated tab
-				if (globalGoDebugOutputProvider) {
-					globalGoDebugOutputProvider.addOutput(
-						`❌ ${errorMsg}`,
-						safeOriginalConfig.name
-					);
-				}
-				reject(new Error(errorMsg));
-			}
-		});
-	});
-
-	// Step 3: Determine working directory
-	let workingDir = sourceDir; // Default to source directory
-	if (runConfig.cwd) {
-		workingDir = runConfig.cwd.replace('${workspaceFolder}', workspaceFolder.uri.fsPath);
-		outputChannel.appendLine(`📂 Step 3 - Working directory: ${workingDir}`);
-	} else {
-		outputChannel.appendLine(`📁 Step 3 - Using source directory as working directory: ${workingDir}`);
-	}
-}
 
 // Helper function to execute run mode with dedicated terminal
 async function executeRunWithDedicatedTerminal(
-	workspaceFolder: vscode.WorkspaceFolder,
-	runConfig: any,
-	safeOriginalConfig: any,
+ 	runConfig: GoDebugConfiguration,
+	safeOriginalConfig: GoDebugConfiguration,
 	outputChannel: vscode.OutputChannel
 ): Promise<void> {
 	const stateManager = ConfigurationStateManager.getInstance();
 
 	// Log session start with detailed timing
 	DebugLogger.info(`Starting new RUN execution session for: ${safeOriginalConfig.name}`, outputChannel);
-	DebugLogger.info(`Workspace: ${workspaceFolder.uri.fsPath}`, outputChannel);
+	DebugLogger.info(`Workspace: ${safeOriginalConfig.vscWorkspaceFolder}`, outputChannel);
 
 	// Add a marker to indicate new execution session
 	outputChannel.appendLine(`\n🔄 Starting new execution session for: ${safeOriginalConfig.name}`);
@@ -1595,7 +1232,7 @@ async function executeRunWithDedicatedTerminal(
 
 	try {
 		// Determine source directory and binary details
-		let sourceDir = workspaceFolder.uri.fsPath;
+		let sourceDir = safeOriginalConfig.vscWorkspaceFolder;
 		let binaryBaseName = 'main';
 
 
@@ -1606,12 +1243,14 @@ async function executeRunWithDedicatedTerminal(
 		const outputBinary = `${binaryBaseName}-run-${timestamp}`;
 		const absoluteBinaryPath = path.join(tempDir, outputBinary);
 
-		await build(workspaceFolder, absoluteBinaryPath, runConfig, safeOriginalConfig, 'run', outputChannel);
+		const goClient = new GoClient(safeOriginalConfig.goPath, safeOriginalConfig.goRoot);
+
+		await goClient.build(absoluteBinaryPath, safeOriginalConfig, 'run', outputChannel);
 
 		// Step 3: Determine working directory
 		let workingDir = sourceDir; // Default to source directory
 		if (runConfig.cwd) {
-			workingDir = runConfig.cwd.replace('${workspaceFolder}', workspaceFolder.uri.fsPath);
+			workingDir = runConfig.cwd.replace('${workspaceFolder}', safeOriginalConfig.vscWorkspaceFolder);
 			outputChannel.appendLine(`📂 Step 3 - Working directory: ${workingDir}`);
 		} else {
 			outputChannel.appendLine(`📁 Step 3 - Using source directory as working directory: ${workingDir}`);
@@ -1650,7 +1289,7 @@ async function executeRunWithDedicatedTerminal(
 		});
 
 		// Set configuration as running with process information
-		stateManager.setConfigRunning(safeOriginalConfig.name, {
+		stateManager.setConfigRunning(safeOriginalConfig.itemName, {
 			mode: 'run',
 			process: runProcess,
 			// terminal: outputChannel, // removed, no terminal used
@@ -1665,7 +1304,7 @@ async function executeRunWithDedicatedTerminal(
 		if (globalGoDebugOutputProvider) {
 			globalGoDebugOutputProvider.addOutput(
 				`🚀 Execution started (PID: ${runProcess.pid})`,
-				safeOriginalConfig.name
+				safeOriginalConfig.itemName
 			);
 		}
 
@@ -1680,7 +1319,7 @@ async function executeRunWithDedicatedTerminal(
 				const lines = output.split('\n');
 				lines.forEach((line: string) => {
 					if (line.trim()) {
-						globalGoDebugOutputProvider!.addOutput(line, safeOriginalConfig.name);
+						globalGoDebugOutputProvider!.addOutput(line, safeOriginalConfig.itemName);
 					}
 				});
 			}
@@ -1695,7 +1334,7 @@ async function executeRunWithDedicatedTerminal(
 				const lines = error.split('\n');
 				lines.forEach((line: string) => {
 					if (line.trim()) {
-						globalGoDebugOutputProvider!.addOutput(`❌ ${line}`, safeOriginalConfig.name);
+						globalGoDebugOutputProvider!.addOutput(`❌ ${line}`, safeOriginalConfig.itemName);
 					}
 				});
 			}
@@ -1713,12 +1352,12 @@ async function executeRunWithDedicatedTerminal(
 			if (globalGoDebugOutputProvider) {
 				globalGoDebugOutputProvider.addOutput(
 					code === 0 ? `✅ ${exitMessage}` : `❌ ${exitMessage}`,
-					safeOriginalConfig.name
+					safeOriginalConfig.itemName
 				);
 			}
 
 			// Mark configuration as no longer running
-			stateManager.setConfigStopped(safeOriginalConfig.name);
+			stateManager.setConfigStopped(safeOriginalConfig.itemName);
 		});
 
 		outputChannel.appendLine(`✅ Process started with PID: ${runProcess.pid}`);

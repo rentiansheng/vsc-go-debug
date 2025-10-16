@@ -298,6 +298,7 @@ return `
             // Setup watch input
             const watchInput = tabContent.querySelector('.watch-input');
             const watchAddBtn = tabContent.querySelector('.watch-add-btn');
+            const watchInspectBtn = tabContent.querySelector('.watch-inspect-btn');
 
             if (watchInput && watchAddBtn) {
                 watchAddBtn.onclick = () => {
@@ -311,8 +312,28 @@ return `
                 watchInput.onkeydown = (e) => {
                     if (e.key === 'Enter') {
                         watchAddBtn.onclick();
-                    }
+                    } 
                 };
+
+                watchInspectBtn.onclick = (e) => {
+                    const expression = watchInput.value.trim();
+                    const watchInputResult = tabContent.querySelector('.watch-input-result');
+                    if( watchInputResult) {
+                        watchInputResult.innerHTML = '';
+                    }
+                    if (expression) {
+                        const frameId = getCurrentFrameId(configName);
+                        vscode.postMessage({
+                            command: 'call_function',
+                            tabName: configName,
+                            expression: expression,
+                            frameId: frameId || 0,
+                        });
+                    }
+                }
+                watchInput.onblur = (e) => {
+                    watchInspectBtn.onclick();
+                }
             }
         }
 
@@ -404,6 +425,7 @@ return `
                     e.stopPropagation();
                     vscode.postMessage({
                         command: 'gotoSource',
+                        tabName: configName,
                         path: filePath,
                         line: frame.line,
                         column: frame.column
@@ -824,7 +846,7 @@ return `
 
                 // 监听失去焦点
                 input.onblur = () => {
-                    //finishEdit(true);
+                    finishEdit(true);
                 };
             };
             return span;
@@ -1148,15 +1170,7 @@ return `
                 redebugBtn.style.display = 'none';
             }
 
-            // Update debug buttons - enabled when running and is debug session
-            const debugButtons = ['continue', 'stepOver', 'stepInto', 'stepOut'];
-            debugButtons.forEach(action => {
-                const btn = toolbar.querySelector(\`[data-action="\${action}"]\`);
-                if (btn) {
-                    btn.disabled = !isRunning;
-                    btn.style.display = isDebugSession ? 'flex' : 'none';
-                }
-            });
+          
         }
 
 
@@ -1223,6 +1237,34 @@ return `
             }
         }
 
+        function callFunctionResult(tabName, expression, result, error) {
+            const tabContent = document.querySelector(\`[data-content="\${tabName}"]\`);
+            if (!tabContent) return;
+
+            const watchInputResult = tabContent.querySelector('.watch-input-result');
+
+            if (!watchInputResult) return;
+            if(error) {
+                    watchInputResult.innerHTML = \`
+                        <span title="expression: \${expression} \n error: \${error}" style="margin-left: 10px;"> 
+                            <span class="variable-type">Result:</span>
+                            <span class="variable-value red">\${error}</span>
+                        </span>
+                    \`;
+            } else if(result) {
+                watchInputResult.innerHTML = \`
+                    <span   title="expression: \${expression}" style="margin-left: 10px;"> 
+                        Result:
+                        <span class="variable-type">(\${result.type})</span>
+                        <span class="variable-value "> \${result.result}</span>
+                    </span>
+                    \`;
+
+            }
+        
+            
+        }
+
         window.addEventListener('message', event => {
             const message = event.data;
             switch (message.command) {
@@ -1234,7 +1276,7 @@ return `
                     break;
                 case 'createTab':
                     createTab(message.tabName);
-                    console.error("[JS] Creating tab:", message.tabName);
+                    console.info("[JS] Creating tab:", message.tabName);
 
                     break;
                 case 'switchTab':
@@ -1299,6 +1341,11 @@ return `
                         showNotification(message.message, 'error');
                     }
                     break;
+                case 'call_function_result':
+                    if (message.tabName ) {
+                        callFunctionResult(message.tabName, message.expression, message.result, message.error);
+                    }
+                    break;
              
                 case 'updateWatchExpression':
                     if (message.tabName && message.expressionId) {
@@ -1310,6 +1357,11 @@ return `
                             message.variablesReference,
 
                         );
+                    }
+                    break;
+                case 'toolbarDebugButtonEnabled':
+                    if (message.tabName ) {
+                        toolbarDebugButtonEnabled(message.tabName);
                     }
                     break;
 

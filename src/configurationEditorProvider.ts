@@ -6,6 +6,7 @@ import { GoDebugConfiguration } from './goDebugConfigurationProvider';
 export class ConfigurationEditorProvider {
     private static currentPanel: vscode.WebviewPanel | undefined;
 
+
     public static showConfigurationEditor(
         context: vscode.ExtensionContext, 
         config?: GoDebugConfiguration,
@@ -20,6 +21,9 @@ export class ConfigurationEditorProvider {
             ConfigurationEditorProvider.currentPanel.webview.html = ConfigurationEditorProvider.getWebviewContent(config, isEdit);
             return;
         }
+
+        
+
 
         const panel = vscode.window.createWebviewPanel(
             'configurationEditor',
@@ -59,7 +63,7 @@ export class ConfigurationEditorProvider {
     }
 
     private static async saveConfiguration(config: GoDebugConfiguration, isEdit: boolean): Promise<void> {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const workspaceFolder = config.vscWorkspaceFolder;
         if (!workspaceFolder) {
             vscode.window.showErrorMessage('No workspace folder found');
             return;
@@ -73,8 +77,11 @@ export class ConfigurationEditorProvider {
         delete cleanConfig.packagePath;
         delete cleanConfig.mainFile;
         delete cleanConfig.workingDir;
+        delete cleanConfig.isEdit;
+        delete cleanConfig.paramName;
+ 
 
-        const launchJsonPath = path.join(workspaceFolder.uri.fsPath, '.vscode', 'launch.json');
+        const launchJsonPath = path.join(workspaceFolder, '.vscode', 'launch.json');
         
         let launchConfig: any = {
             version: '0.2.0',
@@ -93,9 +100,26 @@ export class ConfigurationEditorProvider {
         }
 
         if (isEdit) {
-            // 更新现有配置
-            const index = launchConfig.configurations.findIndex((c: any) => c.name === cleanConfig.name);
+            // 更新现有配置,
+            let index = launchConfig.configurations.findIndex((c: any) => c.name === cleanConfig.name);
+            if(config.name !== config.paramName ) {
+                // 如果修改了 name，新 name 已存在
+                if (index !== -1) {
+                vscode.window.showErrorMessage(`A configuration with the name "${cleanConfig.name}" already exists. Please choose a different name.`);
+                return;
+                } else {
+                    // 找到旧 name 的配置
+                    index = launchConfig.configurations.findIndex((c: any) => c.name === config.paramName);
+                }
+            } 
             if (index !== -1) {
+                let oldConfig = launchConfig.configurations[index];
+                // 保留旧配置中不在新配置中的字段
+                for (let key in oldConfig) {
+                    if (!(key in cleanConfig)) {
+                        cleanConfig[key] = oldConfig[key];
+                    }
+                }
                 launchConfig.configurations[index] = cleanConfig;
             } else {
                 launchConfig.configurations.push(cleanConfig);
@@ -111,8 +135,16 @@ export class ConfigurationEditorProvider {
             fs.mkdirSync(vscodePath, { recursive: true });
         }
 
+        // 删除配置项目中，不需要存储的字段， vscWorkspaceFolder
+        const  saveLaunchConfig = {...launchConfig};
+
+        saveLaunchConfig.configurations = saveLaunchConfig.configurations.map((c: any) => {
+            const { vscWorkspaceFolder, itemName, ...rest } = c;
+            return rest;
+        });
+
         // 写入文件
-        fs.writeFileSync(launchJsonPath, JSON.stringify(launchConfig, null, 2));
+        fs.writeFileSync(launchJsonPath, JSON.stringify(saveLaunchConfig, null, 2));
         
         // 关闭编辑器
         if (ConfigurationEditorProvider.currentPanel) {
@@ -132,8 +164,12 @@ export class ConfigurationEditorProvider {
     }
 
     private static async testConfiguration(config: GoDebugConfiguration): Promise<void> {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.find(
+            folder => folder.uri.fsPath === config.vscWorkspaceFolder
+        );
+        
         const success = await vscode.debug.startDebugging(
-            vscode.workspace.workspaceFolders?.[0],
+            workspaceFolder  ,
             config
         );
 
@@ -148,6 +184,31 @@ export class ConfigurationEditorProvider {
         const isLaunch = config?.request === 'launch' || !config || isEdit;
         const isAttach = config?.request === 'attach';
         const isTest = config?.mode === 'test';
+        var workspaceFolderSelectValueHTMLStr = '';
+        var workspaceFolderCount = 0; 
+    
+        if (vscode.workspace.workspaceFolders) {
+            workspaceFolderCount = vscode.workspace.workspaceFolders.length;
+            workspaceFolderSelectValueHTMLStr = vscode.workspace.workspaceFolders.map(folder =>  `
+                                    <option value="${folder.uri.fsPath}" ${config?.vscWorkspaceFolder === folder.uri.fsPath ? 'selected' : ''}>
+                                        ${folder.uri.fsPath}
+                                    </option>
+                                `).join('');
+        }
+        const workspaceFolderHTMLStr = `
+        <div class="form-field" style="${ workspaceFolderCount === 1 ? 'display:none' : ''}">
+            <label for="vscWorkspaceFolder" class="required">VSCode Workspace</label>
+            <div class="input-container">
+                <!-- 改为下拉选择，从vscode -->
+                <select id="vscWorkspaceFolder" name="vscWorkspaceFolder" required>
+                    <option value="">Select a workspace</option>
+                    ${workspaceFolderSelectValueHTMLStr}
+                </select>
+                <div class="help-text">The workspace folder to use for this debug configuration</div>
+            </div>
+        </div>
+        `;
+
 
         return `<!DOCTYPE html>
 <html lang="en">
@@ -580,6 +641,8 @@ export class ConfigurationEditorProvider {
             <p>Configure your Go debugging settings with an easy-to-use interface</p>
         </div>
 
+         
+
         <form id="configForm">
             <!-- Configuration Type Selector -->
             ${!isEdit ? `
@@ -611,7 +674,8 @@ export class ConfigurationEditorProvider {
                             <div class="help-text">A unique name to identify this debug configuration</div>
                         </div>
                     </div>
-                    
+                    <!-- 如果 workspaceFolderHTMLStr  为空不展示 下拉框 -->
+                    ${ workspaceFolderHTMLStr}
           
                 </div>
             </div>
@@ -626,9 +690,9 @@ export class ConfigurationEditorProvider {
                             <select id="runMode" name="runMode" onchange="updateRunModeFields()">
                                 <option value="file" ${config?.runMode === 'file' ? 'selected' : ''}>📄 Single Go File</option>
                                 <option value="package" ${config?.runMode === 'package' ? 'selected' : ''}>📦 Go Package</option>
-                                <option value="directory" ${config?.runMode === 'directory' ? 'selected' : ''}>📁 Directory</option>
+                                <!-- <option value="directory" ${config?.runMode === 'directory' ? 'selected' : ''}>📁 Directory</option>
                                 <option value="module" ${config?.runMode === 'module' ? 'selected' : ''}>🏗️ Go Module</option>
-                                <option value="workspace" ${config?.runMode === 'workspace' ? 'selected' : ''}>🏢 Workspace</option>
+                                <option value="workspace" ${config?.runMode === 'workspace' ? 'selected' : ''}>🏢 Workspace</option> -->
                             </select>
                             <div class="help-text">Choose how to execute your Go program</div>
                         </div>
@@ -763,7 +827,7 @@ export class ConfigurationEditorProvider {
                     <div class="form-field">
                         <label for="envVars">🌍 Environment Variables</label>
                         <div class="input-container">
-                            <input type="text" id="envVars" name="envVars" value="${Object.entries(config?.env || {}).map(([key, value]) => `${key}=${value}`).join('; ')}" placeholder="PORT=3000; DEBUG=true; DATABASE_URL=postgres://user:pass@localhost:5432/db">
+                            <input type="text" id="envVars" name="envVars" value="${Object.entries(config?.env || {}).map(([key, value]) => `${key}=${value}`).join('; ')}" placeholder="PORT=3000; DEBUG=true;">
                             <div id="envVarsError" class="help-text error" style="display: none; color: var(--vscode-errorForeground);"></div>
                             <div class="help-text">Environment variables (format: KEY=value; separated by semicolons)</div>
                         </div>
@@ -775,23 +839,43 @@ export class ConfigurationEditorProvider {
             <div class="form-section collapsible-section collapsed">
                 <div class="section-header" onclick="toggleSection(this)">⚙️ Advanced Options</div>
                 <div class="section-content">
-                    <div class="form-row">
-                        <div class="form-group">
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="stopOnEntry" name="stopOnEntry" ${config?.stopOnEntry ? 'checked' : ''}>
-                                <label for="stopOnEntry">🛑 Stop on Entry</label>
-                            </div>
-                            <div class="help-text">Automatically pause execution at the first line</div>
-                        </div>
-                        <div class="form-group">
-                            <div class="checkbox-group">
-                                <input type="checkbox" id="showLog" name="showLog" ${config?.showLog ? 'checked' : ''}>
-                                <label for="showLog">📝 Show Debug Log</label>
-                            </div>
-                            <div class="help-text">Display detailed debug adapter communication</div>
+                     
+                    <div class="form-field">
+                        <label for="goRoot">Go Root</label>
+                        <div class="input-container">
+                            <input type="text" id="goRoot" name="goRoot" value="${config?.goRoot || ''}" placeholder="Enter Go root directory">
+                            <div class="help-text">The root directory of your project</div>
                         </div>
                     </div>
-                    <div class="form-row">
+                
+
+                
+                    <div class="form-field">
+                        <label for="goPath">Go Path</label>
+                        <div class="input-container">
+                            <input type="text" id="goPath" name="goPath" value="${config?.goPath || ''}" placeholder="Enter Go path">
+                            <div class="help-text">The path directory for your project</div>
+                        </div>
+                    </div>
+            
+
+                    <div class="form-field">
+                        <label for="goDlvPath">dlv Path</label>
+                        <div class="input-container">
+                            <input type="text" id="goDlvPath" name="goDlvPath" value="${config?.dlvToolPath || ''}" placeholder="Enter dlv path">
+                            <div class="help-text">The path to the dlv debugger</div>
+                        </div>
+                    </div>
+                    <div class="form-field">
+                        <label for="dlvFlags">dlv flags</label>
+                        <div class="input-container">
+                            <input type="text" id="dlvFlags" name="dlvFlags" value="${config?.dlvFlags || ''}" placeholder="Enter dlv flags">
+                            <div class="help-text">The flags to pass to the dlv debugger</div>
+                        </div>
+                    </div>
+                 
+
+                   <!-- <div class="form-row">
                         <div class="form-group">
                             <label for="logOutput">📊 Log Output Target</label>
                             <select id="logOutput" name="logOutput">
@@ -801,7 +885,7 @@ export class ConfigurationEditorProvider {
                             </select>
                             <div class="help-text">Where to display debug logs</div>
                         </div>
-                    </div>
+                    </div> -->
                 </div>
             </div>
 
@@ -1086,14 +1170,29 @@ export class ConfigurationEditorProvider {
                 });
             }
 
-            // Collect advanced options with VSCode Go extension compatible names
-            if (document.getElementById('stopOnEntry').checked) {
-                config.stopOnEntry = true;
-            }
+            // // Collect advanced options with VSCode Go extension compatible names
+            // if (document.getElementById('stopOnEntry').checked) {
+            //     config.stopOnEntry = true;
+            // }
             
-            if (document.getElementById('showLog').checked) {
-                config.showLog = true;
-                config.trace = formData.get('logOutput') || 'console';
+            // if (document.getElementById('showLog').checked) {
+            //     config.showLog = true;
+            //     config.trace = formData.get('logOutput') || 'console';
+            // }
+            if(formData.get('goRoot')) {
+                config.goRoot = formData.get('goRoot');
+            }
+            if(formData.get('goPath')) {
+                config.goPath = formData.get('goPath');
+            }
+            if(formData.get('goDlvPath')) {
+                config.dlvToolPath = formData.get('goDlvPath');
+            }
+            if(formData.get('vscWorkspaceFolder')) {
+                config['vscWorkspaceFolder'] = formData.get('vscWorkspaceFolder');
+            }
+            if(formData.get('dlvFlags')) {
+                config['dlvFlags'] = [formData.get('dlvFlags')];
             }
 
             // Remove undefined properties to keep config clean
@@ -1103,6 +1202,7 @@ export class ConfigurationEditorProvider {
                     delete config[key];
                 }
             });
+            
 
             return config;
         }
@@ -1119,6 +1219,9 @@ export class ConfigurationEditorProvider {
                 alert('Please enter a configuration name');
                 return;
             }
+            // If editing, pass the old name to identify which config to update
+            config.paramName = '${config?.name || ''}'; // Pass old name for edits
+            config.isEdit = ${isEdit}; // Indicate if this is an edit
             vscode.postMessage({ type: 'saveConfiguration', config });
         }
 
@@ -1135,6 +1238,8 @@ export class ConfigurationEditorProvider {
             }
             vscode.postMessage({ type: 'testConfiguration', config });
         }
+        console.log('open config editor');
+
     </script>
 </body>
 </html>`;

@@ -12,13 +12,20 @@
 
 
 在左侧工作区拷贝一个 debug 选型卡，用来管理运行配置项，与 vscode 配置兼容。 
-实现管理和debug等功能。 配置项，单击编辑，hover 会出现，运行和 debug， 右击支持编辑，运行(debug)，删除
+交互式配置管理: 实现管理和debug等功能。 配置项，单击编辑，hover 会出现，run 和 debug， 右击支持编辑，运行(debug)，删除
 ![left copy debug tab](./png/left.jpg) 
+![config ui](./png/config_ui.png)
+在 main  package 右击，会有创建配置
+![editor main package right click](./png/create_config.png)
+
 在底部工作区，新加一个输出tab, 用来负责console 和debug。 
 包含 run/debug toolbar, console, debug(stack trace, variable, watch)
 ![bottom console variable](./png/variables.png)
 ![bottom console watch](./png/watch.png)
- 
+查看变量值, 调用函数, 失去焦点自动计算表达式
+![bottom console watch inspect](./png/watch_inspect_expression_result.png)
+
+
 ## 📋 目录
 
 - [主要特性](#-主要特性)

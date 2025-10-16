@@ -11,9 +11,11 @@ import { getBodyHtml } from './goDebugOutputProvider/body';
 import { getStyles } from './goDebugOutputProvider/styles';
 import { isString } from 'util';
 
-
-
-
+ 
+import { GoDebugConfiguration } from './goDebugConfigurationProvider';
+import { DebugConfigurationProvider } from "./debugConfigProvider";
+import { threadId } from 'worker_threads';
+ 
 
 export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'goDebugOutput';
@@ -21,15 +23,17 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private _outputTabs: Map<string, string[]> = new Map();
     private _watchExpressions: Map<string, { id: string, expression: string }[]> = new Map();
-    private _configurations: any[] = [];
+    private _configurations: GoDebugConfiguration[] = [];
     private globalStateManager: GlobalStateManager;
     private stateChangeListener: vscode.Disposable;
+    private debugConfigProvider: DebugConfigurationProvider;
 
     private static instance: GoDebugOutputProvider | null = null;
 
-    constructor(private readonly _extensionUri: vscode.Uri) {
+    constructor(private readonly _extensionUri: vscode.Uri, debugConfigProvider: DebugConfigurationProvider) {
         // 初始化全局状态管理器
         this.globalStateManager = GlobalStateManager.getInstance();
+        this.debugConfigProvider = debugConfigProvider;
 
 
         // 监听状态变化事件
@@ -71,13 +75,12 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 //this.addOutput(`⏳ 正在启动${event.newState.action === 'debug' ? '调试' : '运行'}会话...`, event.configName);
             }
 
+            this.debugConfigProvider.refreshConfigurationState(event.configName);
             // 更新所有相关的UI组件
             this.updateStateDisplayFields(event.configName, event.newState);
         });
 
-        // Don't create default tab anymore
-        this.loadConfigurations();
-        this.setupFileWatcher();
+ 
         this.setupDebugSessionListeners();
 
         // 设置定期状态同步
@@ -133,6 +136,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             // 重新拉取 stack
             const stackReq = { threadId: id, startFrame: 0, levels: 20 };
             session.customRequest('stackTrace', stackReq).then((response: any) => {
+                session.configuration.gid = id;
                 if (response && response.stackFrames) {
                     inst?.addStack(response, stackReq, tabName);
                 }
@@ -142,11 +146,16 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                     inst?._refreshVariableAndWatchByInst(tabName, session, id, topFrame.id);
 
                 }
+                inst?.sendToolbarDebugButtonEnabled(tabName);
             });
 
         }
     }
 
+    public  sendToolbarDebugButtonEnabled(tabName: string): void {
+        this._sendToolbarDebugButtonEnabled(tabName);
+    }
+    
     public static refreshVariableAndWatch(tabName: string, session: vscode.DebugSession, threadId: number, frameId: number) {
         var inst = GoDebugOutputProvider.instance;
         if (!inst) {
@@ -228,6 +237,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             // 检查所有已知的tab是否有正确的工具栏状态
             for (const tabName of this._outputTabs.keys()) {
                 this.updateToolbarState(tabName);
+                this.debugConfigProvider.refreshConfigurationState(tabName);
             }
         }, 5000);
 
@@ -275,20 +285,12 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             this.updateAllToolbarStates();
         }, 100);
 
-        // Set up delayed configuration refresh
-        setTimeout(() => {
-            console.log('[GoDebugOutputProvider] Delayed configuration refresh');
-            this.loadConfigurations().then(() => {
-                // 加载完配置后，创建对应的标签页
-                this.createTabsForConfigurations();
-            });
-        }, 1000);
-
+ 
         webviewView.webview.onDidReceiveMessage(
             message => {
                 switch (message.command) {
                     case 'toolbarAction':
-                        this.handleToolbarAction(message.action, message.tabName);
+                        this.handleToolbarAction(message.action, message.tabName, message.args);
                         break;
                     case 'gotoSource':
                         this.handleGotoSource(message.path, message.line, message.column);
@@ -332,7 +334,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
             var session: vscode.DebugSession | null = state?.session || null;
             if (!session) {
                 this._configurations.forEach(config => {
-                    if (config.name === tabName && config.debugSession) {
+                    if (config.itemName === tabName && config.debugSession) {
                         session = config.debugSession;
                     }
                 });
@@ -450,15 +452,10 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 frameId: frameId, // Use current frame
                 context: 'repl' // Specify this is for repl context
             } as DebugProtocol.EvaluateArguments);
-            if (response.error) {
-                this.addOutput(`❌ Function ${expression}  frame id ${frameId} result: ${response.error}`, tabName);
-            } else {
-                this.addOutput(`✅ Function ${expression}  frame id ${frameId} result: executed successfully`, tabName);
-            }
-          
-    
+         
+            this._sendCallFunctionEvaluateMessage(tabName, expression, response, "");
         } catch (error: any) {
-            this.addOutput(`❌ Function ${expression}  frame id ${frameId} result: ${error.message}`, tabName);
+            this._sendCallFunctionEvaluateMessage(tabName, expression, "", error?.message || error?.toString() || 'Unknown error');
             console.error(`[callFunctionEvaluate] Error calling function ${expression}:`, error);
         }
     }
@@ -529,78 +526,35 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async loadConfigurations(): Promise<void> {
-        console.log('[loadConfigurations] Starting configuration loading...');
-        this._configurations = [];
-
-        if (vscode.workspace.workspaceFolders) {
-            for (const folder of vscode.workspace.workspaceFolders) {
-                const launchJsonPath = path.join(folder.uri.fsPath, '.vscode', 'launch.json');
-                console.log('[loadConfigurations] Checking launch.json at:', launchJsonPath);
-
-                if (fs.existsSync(launchJsonPath)) {
-                    try {
-                        const content = fs.readFileSync(launchJsonPath, 'utf8');
-                        const launch = JSON.parse(content);
-
-                        if (launch.configurations && Array.isArray(launch.configurations)) {
-                            console.log('[loadConfigurations] Found configurations:', launch.configurations.length);
-
-                            // 加载所有 go-debug-pro 和 go 类型的配置
-                            const goConfigs = launch.configurations.filter(
-                                (config: any) => config.type === 'go-debug-pro' || config.type === 'go'
-                            );
-
-                            console.log('[loadConfigurations] Go configurations (go-debug-pro + go):', goConfigs.length);
-                            console.log('[loadConfigurations] Go config names:', goConfigs.map((c: any) => c.name));
-
-                            this._configurations.push(...goConfigs);
-                        }
-                    } catch (error) {
-                        console.error('[loadConfigurations] Error reading launch.json:', error);
-                    }
-                } else {
-                    console.log('[loadConfigurations] launch.json does not exist at:', launchJsonPath);
-                }
-            }
-        } else {
-            console.log('[loadConfigurations] No workspace folders found');
-        }
-
-        console.log('[loadConfigurations] Total configurations loaded:', this._configurations.length);
-        console.log('[loadConfigurations] Configuration names:', this._configurations.map(c => c.name));
-    }
+ 
 
     private createTabsForConfigurations(): void {
         console.log('[createTabsForConfigurations] Creating tabs for loaded configurations...');
 
         this._configurations.forEach(config => {
-            if (!this._outputTabs.has(config.name)) {
-                console.log(`[createTabsForConfigurations] Creating tab for: ${config.name}`);
-                this.createTab(config.name);
+            if (!this._outputTabs.has(config.itemName)) {
+                console.log(`[createTabsForConfigurations] Creating tab for: ${config.itemName}`);
+                this.createTab(config.itemName);
             }
         });
 
         console.log(`[createTabsForConfigurations] Total tabs created: ${this._outputTabs.size}`);
     }
 
-    private setupFileWatcher(): void {
-        if (vscode.workspace.workspaceFolders) {
-            for (const folder of vscode.workspace.workspaceFolders) {
-                const launchJsonPattern = new vscode.RelativePattern(folder, '.vscode/launch.json');
-                const watcher = vscode.workspace.createFileSystemWatcher(launchJsonPattern);
-
-                watcher.onDidChange(() => this.loadConfigurations());
-                watcher.onDidCreate(() => this.loadConfigurations());
-                watcher.onDidDelete(() => this.loadConfigurations());
-            }
+    private  _sendToolbarDebugButtonEnabled(tabName: string): void {
+        if (this._view) {
+            this._view.webview.postMessage({
+                command: 'toolbarDebugButtonEnabled',
+                tabName: tabName,
+            });
         }
     }
+ 
 
     private setupDebugSessionListeners(): void {
         // 监听调试会话开始
         vscode.debug.onDidStartDebugSession((session) => {
-            const tabName = session.configuration.name;
+            const tabName = session.configuration.itemName;
             console.log('[Go Debug Output] Debug session started:', tabName, session.type);
             if (session.type === 'go-debug-pro') {
                 // 确保创建对应的tab
@@ -619,7 +573,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
 
         // 监听调试会话结束
         vscode.debug.onDidTerminateDebugSession((session) => {
-            const tabName = session.configuration.name;
+            const tabName = session.configuration.itemName;
             console.log('[Go Debug Output] Debug session terminated:', tabName, session.type);
             if (session.type === 'go-debug-pro') {
                 this.setSessionInfo(tabName, 'debug', 'stopped', session);
@@ -643,7 +597,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         vscode.debug.onDidChangeActiveDebugSession((session) => {
 
             if (session && session.type === 'go-debug-pro') {
-                console.log('[Go Debug Output] Active debug session changed:', session.configuration.name);
+                console.log('[Go Debug Output] Active debug session changed:', session.configuration.itemName);
                 // 更新所有工具栏状态，确保UI反映当前状态
                 setTimeout(() => this.updateAllToolbarStates(), 100);
             }
@@ -771,6 +725,9 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     }
 
     public createTab(tabName: string) {
+        if(!tabName || tabName.trim().length === 0) {
+            tabName = "General";
+        }
         if (!this._outputTabs.has(tabName)) {
             this._outputTabs.set(tabName, []);
         }
@@ -787,7 +744,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         this._switchToTab(tabName);
     }
 
-    private async handleToolbarAction(action: string, tabName: string) {
+    private async handleToolbarAction(action: string, tabName: string, args?: any) {
         const configState = this.globalStateManager.getState(tabName);
 
         console.log(`[GoDebugOutputProvider] Toolbar action ${action} for ${tabName}:`, configState);
@@ -812,10 +769,6 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 }
                 break;
             case 'stop':
-                if (configState && (configState.state === 'running' || configState.state === 'starting')) {
-                    this.addOutput(`Stopping ${tabName}...`, tabName);
-                    this.globalStateManager.stopConfig(tabName);
-                }
                 await this.stopSession(tabName);
                 break;
             case 'restart':
@@ -828,26 +781,64 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 break;
             case 'continue':
                 if (configState?.action === 'debug') {
-                    vscode.commands.executeCommand('workbench.action.debug.continue');
+                   //this.vscodeCommandSession(tabName, 'workbench.action.debug.continue');
+                   this.sessionToolbarCommand( tabName, 'continue', args);
                 }
                 break;
             case 'stepOver':
                 if (configState?.action === 'debug') {
-                    vscode.commands.executeCommand('workbench.action.debug.stepOver');
+                   //this.vscodeCommandSession(tabName, 'workbench.action.debug.stepOver');
+                     this.sessionToolbarCommand( tabName, 'next', args);
                 }
                 break;
             case 'stepInto':
                 if (configState?.action === 'debug') {
-                    vscode.commands.executeCommand('workbench.action.debug.stepInto');
+                   //this.vscodeCommandSession(tabName, 'workbench.action.debug.stepInto');
+                    this.sessionToolbarCommand( tabName, 'stepIn', args);
                 }
                 break;
             case 'stepOut':
                 if (configState?.action === 'debug') {
-                    vscode.commands.executeCommand('workbench.action.debug.stepOut');
+                   //this.vscodeCommandSession(tabName, 'workbench.action.debug.stepOut');
+                    this.sessionToolbarCommand( tabName, 'stepOut', args);
                 }
                 break;
         }
     }
+
+     private async sessionToolbarCommand(tabName: string, command: string, args?: any) {
+        const session = this.getSession(tabName);
+        if (!session) {
+            this.addOutput(`⚠️ No active session for ${tabName}`, tabName);
+            return;
+        }
+
+        try {
+            await session.customRequest(command, { threadId:session.configuration.gid,...args });
+        } catch (error) {
+            console.error(`[sessionCommand] Error executing command "${command}" for ${tabName}:`, error);
+            this.addOutput(`❌ Error executing command "${command}" for ${tabName}: ${error}`, tabName);
+        }
+    }
+    
+    private vscodeCommandSession(tabName: string, cmd: string) {
+        var session = this.getSession(tabName);
+        if(!session) {
+            this.addOutput(`No active debug session for tab: ${tabName}`, tabName);
+            return;
+        }
+        if(vscode.debug.activeDebugSession?.id !== session.id) {
+            try{
+                vscode.debug.activeDebugSession = session;  
+            }catch(e){
+                console.error(`Error setting active debug session:`, e);
+                this.addOutput(`Error setting active debug session: ${e}`, tabName);
+            }   
+        }
+        vscode.commands.executeCommand(cmd);
+
+    }
+
 
     /**
      * 处理跳转到源码的请求
@@ -856,13 +847,6 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         try {
             
             // 检查文件是否存在,
-            if(!filePath.startsWith("file://") && !path.isAbsolute(filePath)){
-                // 获取工作区根路径
-                const workspaceFolders = vscode.workspace.workspaceFolders;
-                if (workspaceFolders &&  workspaceFolders.length === 1) {
-                    filePath = path.join(workspaceFolders[0].uri.fsPath, filePath);
-                }
-            }
             if (!fs.existsSync(filePath)) {
                 vscode.window.showErrorMessage(`文件不存在: ${filePath}`);
                 return;
@@ -903,13 +887,15 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    public findConfigurationByName(name: string): any | undefined {
-        return this._configurations.find(c => c.name === name);
+    public findConfigurationByName(name: string): GoDebugConfiguration | undefined {
+        // DebugConfigurationProvider 找到对应的配置
+        return this.debugConfigProvider.findConfigurationByItemName(name);
+        
     }
 
     private async executeRun(tabName: string, mode: string) {
         console.log(`[executeRun] Looking for configuration: "${tabName}"`);
-        console.log(`[executeRun] Available configurations:`, this._configurations.map(c => c.name));
+        console.log(`[executeRun] Available configurations:`, this._configurations.map(c => c.itemName));
 
 
         // Find configuration and execute it
@@ -949,6 +935,8 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
+ 
+
     private async stopSession(tabName: string) {
         const configState = this.globalStateManager.getState(tabName);
         if (configState && (configState.state === 'running' || configState.state === 'starting')) {
@@ -958,8 +946,6 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
                 if (configState.session) {
                     vscode.debug.stopDebugging(configState.session);
                 }
-                // Stop debug session using VS Code command
-                vscode.commands.executeCommand('workbench.action.debug.stop');
             } else {
                 if (configState.process) {
                     try {
@@ -1135,10 +1121,7 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
     }
 
 
-    public refreshConfigurations() {
-        this.loadConfigurations();
-    }
-
+ 
     private _updateWebview(tabName: string, content: string) {
         if (this._view) {
             this._view.webview.postMessage({
@@ -1176,18 +1159,20 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
+
     private _sendStackMessage(tabName: string, stack: { stackFrames: DebugProtocol.StackFrame[], totalFrames: number }, args?: DebugProtocol.StackTraceArguments) {
         if (this._view) {
 
+            const cfg = this.findConfigurationByName(tabName);
+            var wsf = cfg?.vscWorkspaceFolder;
+ 
+        
             // stack.stackFrames 所有元素，新加一个字段叫 title  = true， 等所有数据处理完成，然后再执行 this._view.webview.postMessage
             stack.stackFrames.forEach(frame => {
                 const fileLinePath = `${frame?.source?.path}:${frame.line}`;
-                // 删除当前 worker 打开项目时的路径前缀
-                const workspaceFolders = vscode.workspace.workspaceFolders;
-                if (workspaceFolders && workspaceFolders.length > 0) {
-                    const workspacePath = workspaceFolders[0].uri.fsPath;
-                    if (fileLinePath.startsWith(workspacePath)) {
-                        (frame as any).title = fileLinePath.replace(workspacePath, '').replace(/^\//, '');
+                if (wsf) {
+                    if (fileLinePath.startsWith(wsf)) {
+                        (frame as any).title = fileLinePath.replace(wsf, '').replace(/^\//, '');
                     } else {
                         (frame as any).title = fileLinePath;
                     }
@@ -1216,6 +1201,18 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         }
     }
 
+    private _sendCallFunctionEvaluateMessage(tabName: string, expression: string, result: any, error: string ) {
+        if (this._view) {
+            this._view.webview.postMessage({
+                command: 'call_function_result',
+                tabName: tabName,
+                expression: expression,
+                result: result,
+                error: error
+            });
+        }
+    }
+
     private updateAllToolbarStates() {
         // 首先检查当前活动的调试会话
         this.syncWithActiveDebugSessions();
@@ -1239,15 +1236,21 @@ export class GoDebugOutputProvider implements vscode.WebviewViewProvider {
         // 检查当前活动的调试会话并同步状态
         const activeSessions = vscode.debug.activeDebugSession;
         if (activeSessions && activeSessions.type === 'go-debug-pro') {
-            console.log('[Go Debug Output] Syncing with active debug session:', activeSessions.name);
-            this.setSessionInfo(activeSessions.configuration.name, 'debug', 'running', activeSessions);
+            const tabName = activeSessions.configuration?.itemName;
+            if (tabName) {
+                console.log('[Go Debug Output] Syncing with active debug session:', activeSessions.name);
+                this.setSessionInfo(tabName, 'debug', 'running', activeSessions);
+            }
         }
 
         // 检查所有调试会话
         for (const session of vscode.debug.activeDebugSession ? [vscode.debug.activeDebugSession] : []) {
             if (session.type === 'go-debug-pro') {
-                console.log('[Go Debug Output] Found active go-debug-pro session:', session.name);
-                this.setSessionInfo(session.configuration.name, 'debug', 'running', session);
+                const tabName = session.configuration?.itemName;
+                if (tabName) {
+                    console.log('[Go Debug Output] Found active go-debug-pro session:', session.name);
+                    this.setSessionInfo(tabName, 'debug', 'running', session);
+                }
             }
         }
     }

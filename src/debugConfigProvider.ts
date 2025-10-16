@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { GoDebugConfiguration } from './goDebugConfigurationProvider';
 
 // Import the ConfigurationStateManager from extension.ts
 declare global {
@@ -12,6 +13,12 @@ export class DebugConfigurationProvider implements vscode.TreeDataProvider<Debug
     readonly onDidChangeTreeData: vscode.Event<DebugConfigItem | undefined | null | void> = this._onDidChangeTreeData.event;
 
     private _configurations: DebugConfigItem[] = [];
+    private _isMultiFolder: boolean = false;
+
+
+    private changeMultiToTrue() {
+        this._isMultiFolder = true;
+    }
 
     constructor() {
         this.loadDebugConfigurations();
@@ -45,6 +52,9 @@ export class DebugConfigurationProvider implements vscode.TreeDataProvider<Debug
         if (!vscode.workspace.workspaceFolders) {
             return;
         }
+        if (vscode.workspace.workspaceFolders.length > 1) {
+            this.changeMultiToTrue();
+        }
 
         for (const folder of vscode.workspace.workspaceFolders) {
             const launchJsonPath = path.join(folder.uri.fsPath, '.vscode', 'launch.json');
@@ -58,11 +68,22 @@ export class DebugConfigurationProvider implements vscode.TreeDataProvider<Debug
                     
                     if (launchConfig.configurations) {
                         launchConfig.configurations.forEach((config: any, index: number) => {
+                            const debugConfig = config as GoDebugConfiguration;
+                            if (this._isMultiFolder) {
+                                debugConfig.itemName = `${debugConfig.name} (${folder.name})`;
+                            }else {
+                                debugConfig.itemName = debugConfig.name;
+                            }
+                            debugConfig.vscWorkspaceFolder = folder.uri.fsPath;
+                            debugConfig.vscWorkspaceName = folder.name;
+
+
                             const item = new DebugConfigItem(
                                 config.name || `Configuration ${index + 1}`,
                                 config,
-                                folder.name,
-                                launchJsonPath
+                                launchJsonPath,
+                                folder,
+                                this._isMultiFolder,
                             );
                             this._configurations.push(item);
                         });
@@ -117,6 +138,10 @@ export class DebugConfigurationProvider implements vscode.TreeDataProvider<Debug
             cwd: '${workspaceFolder}',
             env: {},
             args: [],
+            goRoot: '',
+            goPath: '',
+            dlvFlags: [],
+            mode: 'debug',
             stopOnEntry: false
         };
 
@@ -228,31 +253,87 @@ export class DebugConfigurationProvider implements vscode.TreeDataProvider<Debug
     }
 
     public async runConfiguration(item: DebugConfigItem): Promise<void> {
+        // Find the workspace folder that matches the configuration's workspace path
         const workspaceFolder = vscode.workspace.workspaceFolders?.find(
-            folder => item.filePath.startsWith(folder.uri.fsPath)
+            folder => folder.uri.fsPath === item.configuration.vscWorkspaceFolder
         );
 
         if (!workspaceFolder) {
-            vscode.window.showErrorMessage('Cannot find workspace folder');
+            vscode.window.showErrorMessage(
+                `Cannot find workspace folder for path: ${item.configuration.vscWorkspaceFolder}`
+            );
             return;
         }
 
-        await vscode.debug.startDebugging(workspaceFolder, item.configuration);
+        try {
+            await vscode.debug.startDebugging(workspaceFolder, item.configuration);
+        } catch (error) {
+            vscode.window.showErrorMessage(`Failed to start debugging: ${error}`);
+        }
     }
+
+    public findConfigurationByName(name: string): GoDebugConfiguration | undefined {
+        const item =  this._configurations.find(config => config.configuration.name === name);
+        if(!item) {
+            return  undefined;
+        }
+        return item.configuration;
+    }
+
+    public findConfigurationByItemName(itemName: string): GoDebugConfiguration | undefined {
+        const item =  this._configurations.find(config => config.configuration.itemName === itemName);
+        if(!item) {
+            return  undefined;
+        }
+        return item.configuration;
+    }
+
+    public refreshConfigurationState(configName: string): void {
+        const item = this._configurations.find(config => config.configuration.itemName === configName);
+        if (item) {
+            item.refreshConfigurationState();
+            this._onDidChangeTreeData.fire(item);
+        }
+    }
+    
+
+
+
 }
 
 export class DebugConfigItem extends vscode.TreeItem {
+    public readonly  workspace: string = "";
     constructor(
         public readonly label: string,
-        public readonly configuration: any,
-        public readonly workspace: string,
-        public readonly filePath: string
+        public readonly configuration: GoDebugConfiguration,
+        public readonly filePath: string,
+        public readonly vscFolder: vscode.WorkspaceFolder,
+        public readonly isMutiltiFolder?: boolean
     ) {
         super(label, vscode.TreeItemCollapsibleState.None);
-        
+
+        this.workspace = vscFolder.uri.fsPath;
+        this.configuration.vscWorkspaceFolder = this.workspace;
         this.tooltip = this.generateTooltip();
-        this.description = `${configuration.type} • ${workspace}`;
+        this.description = `${vscFolder.name}`;
         
+    
+       this.refreshConfigurationState();
+
+        // 添加命令 - 单击时打开配置编辑器（避免循环引用）
+        this.command = {
+            command: 'goDebugPro.editConfigurationWithEditor',
+            title: 'Edit Configuration',
+            arguments: [{
+                configuration: this.configuration,
+                workspace: this.workspace,
+                filePath: this.filePath,
+                label: this.label
+            }]
+        };
+    }
+
+    public refreshConfigurationState(): void {
         // Check if configuration is currently running
         const isRunning = this.isConfigurationRunning();
         
@@ -271,31 +352,16 @@ export class DebugConfigItem extends vscode.TreeItem {
         } else {
             // Configuration is not running - show normal context and icons
             this.contextValue = 'debugConfig';
-            
-            if (configuration.type === 'go-debug-pro') {
-                this.iconPath = new vscode.ThemeIcon('debug-alt', new vscode.ThemeColor('debugIcon.startForeground'));
-            } else {
-                this.iconPath = new vscode.ThemeIcon('debug');
-            }
+            this.iconPath = new vscode.ThemeIcon('debug');
+         
         }
-
-        // 添加命令 - 单击时打开配置编辑器（避免循环引用）
-        this.command = {
-            command: 'goDebugPro.editConfigurationWithEditor',
-            title: 'Edit Configuration',
-            arguments: [{
-                configuration: this.configuration,
-                workspace: this.workspace,
-                filePath: this.filePath,
-                label: this.label
-            }]
-        };
+    
     }
 
     private isConfigurationRunning(): boolean {
         try {
             const stateManager = (global as any).getConfigurationStateManager?.();
-            return stateManager?.isConfigRunning(this.configuration.name) || false;
+            return stateManager?.isConfigRunning(this.configuration.itemName) || false;
         } catch {
             return false;
         }
@@ -304,7 +370,7 @@ export class DebugConfigItem extends vscode.TreeItem {
     private getRunningState(): {mode: 'run' | 'debug', terminal: vscode.Terminal, startTime: number} | undefined {
         try {
             const stateManager = (global as any).getConfigurationStateManager?.();
-            return stateManager?.getConfigState(this.configuration.name);
+            return stateManager?.getConfigState(this.configuration.itemName);
         } catch {
             return undefined;
         }
@@ -313,6 +379,7 @@ export class DebugConfigItem extends vscode.TreeItem {
     private generateTooltip(): string {
         const config = this.configuration;
         let tooltip = `Name: ${config.name}\n`;
+
         tooltip += `Type: ${config.type}\n`;
         tooltip += `Request: ${config.request}\n`;
         
@@ -332,8 +399,20 @@ export class DebugConfigItem extends vscode.TreeItem {
             tooltip += `Stop on Entry: Yes\n`;
         }
         
-        tooltip += `\nWorkspace: ${this.workspace}`;
-        
+        tooltip += `Workspace: ${this.workspace}\n`;
+        if(config.goRoot) {
+            tooltip += `Go Root: ${config.goRoot}\n`;
+        }
+        if(config.goPath) {
+            tooltip += `Go Path: ${config.goPath}\n`;
+        }
+        if(config.dlvFlags && config.dlvFlags.length > 0) {
+            tooltip += `Delve Flags: ${config.dlvFlags.join(' ')}\n`;
+        }
+        if(config.dlvToolPath) {
+            tooltip += `Delve Tool Path: ${config.dlvToolPath}\n`;
+        }
+       
         return tooltip;
     }
 }

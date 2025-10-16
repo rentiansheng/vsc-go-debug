@@ -33,25 +33,9 @@ async function getAvailablePort(): Promise<number> {
 
 
 
-export function getWorkspaceFolderPath(fileUri?: vscode.Uri): string | undefined {
-	if (fileUri) {
-		const workspace = vscode.workspace.getWorkspaceFolder(fileUri);
-		if (workspace) {
-			return fixDriveCasingInWindows(workspace.uri.fsPath);
-		}
-	}
-
-	// fall back to the first workspace
-	const folders = vscode.workspace.workspaceFolders;
-	if (folders && folders.length) {
-		return fixDriveCasingInWindows(folders[0].uri.fsPath);
-	}
-	return undefined;
-}
+ 
 
 // Response class for DAP protocol responses
-
-
 const TWO_CRLF = '\r\n\r\n';
 
 type ILogger = Pick<vscode.LogOutputChannel, 'error' | 'info' | 'debug' | 'trace'>;
@@ -292,9 +276,11 @@ export class DelveDAPOutputAdapter extends ProxyDebugAdapter {
 		}
 
 
-		this.handlePluginMessage(m);
-
+		const hook = this.handlePluginMessage(m);
 		super.sendMessageToClient(message);
+		if (hook) {
+			hook();
+		}
 	}
 
 
@@ -304,9 +290,9 @@ export class DelveDAPOutputAdapter extends ProxyDebugAdapter {
 
 
 
-	protected handlePluginMessage(m: any) {
+	protected handlePluginMessage(m: any): any {
 		if (!m) {
-			return;
+			return null;
 		}
 	
 		const mt = new messageLib(m);
@@ -314,77 +300,28 @@ export class DelveDAPOutputAdapter extends ProxyDebugAdapter {
 			this.recordRequest(m);
 
 		} else {
-		var req = this.handleResponse(m) as any;
+			var req = this.handleResponse(m) as any;
+			if(req && req.command === 'continue') {
+				return ( this.sendMessageToClient({
+					type: 'event',
+					event: 'continued',
+					body: { threadId: this.currentGoroutineId, allThreadsContinued: false }
+				}));
+			}
 		}
 
 		if (mt.isEvent()) {
 			switch (m.event) {
 				case 'stopped':
 					this.currentGoroutineId = m.body?.threadId || 0;
- 					GoDebugOutputProvider.StopEvent(this.currentGoroutineId, this.configuration.name);
+ 					GoDebugOutputProvider.StopEvent(this.currentGoroutineId, this.configuration.itemName);
 
 					// Request stack trace for the current goroutine. 
 					break;
 			}
 			return;
 		}
-
-		// if (m.type !== 'response' && m.type !== 'request') {
-		// 	return;
-		// }
-		// switch (m.command) {
-		// 	case 'stackTrace':
-		// 		if (mt.isRequest()) {
- 		// 			this.recordRequest(m);
-		// 			// if(m.arguments.threadId && m.arguments.threadId === this.currentGoroutineId) {
-		// 			// 	this.stackArgsReq = m.arguments;
-		// 			// }  
-		// 		} else {
-		// 			var req = this.handleResponse(m) as any;
-		// 			if (req && m.request_seq === req.seq && this.currentGoroutineId === req?.arguments?.threadId) {
-		// 				GoDebugOutputProvider.Stack(m.body, req.arguments, this.configuration.name);
-		// 				if( req.arguments.startFrame === 0) {
-		// 					const frames = m.body?.stackFrames || [];
-		// 					this.frameId = frames.length > 0 ? frames[0].id : 0;
-		// 					this.debugSession?.customRequest("scopes", { frameId: this.frameId, __go_debug_pro: true });
-		// 				}
-		// 			}
-
-		// 		} 
-
-		// 		break;
-		// 	case 'evaluate':
-		// 		if (mt.isRequest()) {
-		// 			this.recordRequest(m);
-		// 		} else {
-		// 			var req = this.handleResponse(m) as any;
-		// 			if (req && m.request_seq === req.seq) {
-		// 				console.log(m.body);
-		// 			}
-		// 		}
-		// 		break;
-		// 	case 'scopes':
-		// 		if (mt.isRequest()) {
-		// 			this.recordRequest(m);
-		// 		} else {
-		// 			var req = this.handleResponse(m) as any;
-		// 			if (req && m.request_seq === req.seq && this.frameId === req?.arguments?.frameId) {
-		// 				this.scopesVariablesReference = m.body?.scopes[0]?.variablesReference || 0;
-		// 				this.debugSession?.customRequest("variables", { variablesReference:  this.scopesVariablesReference } );
-		// 			}
-		// 		}
-		// 		break;
-		// 	case 'variables':
-		// 		if (mt.isRequest()) {
-		// 			this.recordRequest(m);
-
-		// 		} else {
-		// 			var req = this.handleResponse(m) as any;
-		// 			if (req && m.request_seq === req.seq ) {
-		// 				GoDebugOutputProvider.Variables(m.body.variables, req.arguments, this.configuration.name);
-		// 			}
-		// 		}
-		// }
+		return null;
 	}
 
 
@@ -777,6 +714,10 @@ function getSpawnConfig(launchAttachArgs: vscode.DebugConfiguration, logErr: (ms
 	// launchArgsEnv is user-requested env vars (envFiles + env + toolsEnvVars).
 	const env = launchAttachArgs.env;
 	const dlvPath = launchAttachArgs.dlvToolPath ?? 'dlv';
+	let runConfig = launchAttachArgs;
+	if(launchAttachArgs.configuration) {
+		runConfig = runConfig.configuration;
+	}
 
 	if (!fs.existsSync(dlvPath)) {
 		const envPath = getEnvPath();
@@ -787,7 +728,7 @@ function getSpawnConfig(launchAttachArgs: vscode.DebugConfiguration, logErr: (ms
 		);
 		throw new Error('Cannot find Delve debugger (dlv dap)');
 	}
-	let dir = getWorkspaceFolderPath();
+	let dir = runConfig.vscWorkspaceFolder;
 	if (launchAttachArgs.request === 'launch' && launchAttachArgs['__buildDir']) {
 		// __buildDir is the directory determined during resolving debug config
 		dir = launchAttachArgs['__buildDir'];
@@ -833,8 +774,8 @@ export async function toggleHideSystemGoroutinesCustomRequest(
 			context: 'context'
 		});
 	} catch (err) {
-		if (err instanceof Error && err.message.indexOf('debuggee is running') >= 0) {
-			debugConsole.appendLine('Cannot toggle hideSystemGoroutines while debuggee is running');
+		if (err instanceof Error && err.message.indexOf('debugger is running') >= 0) {
+			debugConsole.appendLine('Cannot toggle hideSystemGoroutines while debugger is running');
 			return;
 		}
 		debugConsole.appendLine(`Error toggling hideSystemGoroutines: ${err}`);

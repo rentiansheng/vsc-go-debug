@@ -107,16 +107,16 @@ export function getTabControlHtml(): string {
                             <span class="codicon codicon-bug"></span>
                         </button>
                         <div class="toolbar-separator"></div>
-                        <button class="toolbar-button" data-action="continue" title="Continue" disabled>
+                        <button class="toolbar-button" data-action-group='debug' data-action="continue" title="Continue" disabled>
                             <span class="codicon codicon-debug-continue"></span>
                         </button>
-                        <button class="toolbar-button" data-action="stepOver" title="Step Over" disabled>
+                        <button class="toolbar-button" data-action-group='debug' data-action="stepOver" title="Step Over" disabled>
                             <span class="codicon codicon-debug-step-over"></span>
                         </button>
-                        <button class="toolbar-button" data-action="stepInto" title="Step Into" disabled>
+                        <button class="toolbar-button" data-action-group='debug' data-action="stepInto" title="Step Into" disabled>
                             <span class="codicon codicon-debug-step-into"></span>
                         </button>
-                        <button class="toolbar-button" data-action="stepOut" title="Step Out" disabled>
+                        <button class="toolbar-button" data-action-group='debug' data-action="stepOut" title="Step Out" disabled>
                             <span class="codicon codicon-debug-step-out"></span>
                         </button>
                         <div class="toolbar-separator"></div>
@@ -152,12 +152,19 @@ export function getTabControlHtml(): string {
                         if (action === "") {
                             return;
                         }
+                        const frameId = getCurrentFrameId(configName);
                         if (action && !target.disabled) {
+                            toolbar.querySelectorAll('.toolbar-button[data-action-group="debug"]').forEach(btn => {
+                                btn.disabled = true;
+                            });
                             console.log(\`Toolbar action: \${action} for config: \${configName}\`);
                             vscode.postMessage({
                                 command: 'toolbarAction',
                                 action: action,
-                                tabName: configName
+                                tabName: configName,
+                                args: {
+                                    frameId: frameId || 0,
+                                }
                             });
                         }
                     }
@@ -192,7 +199,11 @@ export function getTabControlHtml(): string {
                                 <div class="watch-list" data-content="watch" style="display: none;">
                                     <div class="watch-input-area">
                                         <input type="text" class="watch-input" placeholder="Enter expression..." />
+                                        <button class="watch-inspect-btn">👁️</button>
                                         <button class="watch-add-btn">+</button>
+                                    </div>
+                                    <div class="watch-input-result"> 
+                                       
                                     </div>
                                     <div class="watch-expressions">
                                         <div class="empty-state">no watch expressions</div>
@@ -226,6 +237,14 @@ export function getTabControlHtml(): string {
             switchTab(configName);
         }
 
+        function toolbarDebugButtonEnabled(tabName) {
+            const toolbar = document.querySelector(\`.toolbar[data-tab="\${tabName}"]\`);
+            if (toolbar) {
+                const debugButton = toolbar.querySelectorAll('.toolbar-button[data-action-group="debug"]').forEach(debugButton => {
+                    debugButton.disabled = false;
+                });
+            }
+        }
 
         function switchTab(tabName) {
             // Update active tab
