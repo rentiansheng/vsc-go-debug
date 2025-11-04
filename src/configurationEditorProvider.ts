@@ -35,6 +35,8 @@ export class ConfigurationEditorProvider {
             }
         );
 
+        console.log('Opening Configuration Editor Webview');
+
         ConfigurationEditorProvider.currentPanel = panel;
 
         panel.webview.html = ConfigurationEditorProvider.getWebviewContent(config, isEdit);
@@ -189,11 +191,20 @@ export class ConfigurationEditorProvider {
     
         if (vscode.workspace.workspaceFolders) {
             workspaceFolderCount = vscode.workspace.workspaceFolders.length;
-            workspaceFolderSelectValueHTMLStr = vscode.workspace.workspaceFolders.map(folder =>  `
-                                    <option value="${folder.uri.fsPath}" ${config?.vscWorkspaceFolder === folder.uri.fsPath ? 'selected' : ''}>
-                                        ${folder.uri.fsPath}
-                                    </option>
-                                `).join('');
+            if (workspaceFolderCount === 1) {
+                workspaceFolderSelectValueHTMLStr = vscode.workspace.workspaceFolders.map(folder =>  `
+                                                <option value="${folder.uri.fsPath}" ${'selected'}>
+                                                    ${folder.uri.fsPath}
+                                                </option>
+                                            `).join('');
+            } else{
+                workspaceFolderSelectValueHTMLStr = vscode.workspace.workspaceFolders.map(folder =>  `
+                                                <option value="${folder.uri.fsPath}" ${config?.vscWorkspaceFolder === folder.uri.fsPath  ? 'selected' : ''}>
+                                                    ${folder.uri.fsPath}
+                                                </option>
+                                            `).join('');
+            }
+     
         }
         const workspaceFolderHTMLStr = `
         <div class="form-field" style="${ workspaceFolderCount === 1 ? 'display:none' : ''}">
@@ -683,8 +694,9 @@ export class ConfigurationEditorProvider {
             <!-- Launch Configuration -->
             <div class="form-section conditional-section launch-section ${isLaunch ? 'show' : ''}">
                 <div class="section-header">Launch Settings</div>
-                <div class="section-content">
-                    <div class="form-field">
+
+                <div class="section-content" >
+                    <div class="form-field" ${isEdit?  "style='display:none'" : ''}>
                         <label for="runMode">🎯 Run Mode</label>
                         <div class="input-container">
                             <select id="runMode" name="runMode" onchange="updateRunModeFields()">

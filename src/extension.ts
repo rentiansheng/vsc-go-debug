@@ -61,6 +61,53 @@ class DebugLogger {
 	}
 }
 
+// Output Channel Manager - ensures each channel is created only once
+class OutputChannelManager {
+	private static instance: OutputChannelManager;
+	private channels: Map<string, vscode.OutputChannel> = new Map();
+	private logChannels: Map<string, vscode.LogOutputChannel> = new Map();
+
+	private constructor() {}
+
+	static getInstance(): OutputChannelManager {
+		if (!OutputChannelManager.instance) {
+			OutputChannelManager.instance = new OutputChannelManager();
+		}
+		return OutputChannelManager.instance;
+	}
+
+	getChannel(name: string): vscode.OutputChannel;
+	getChannel(name: string, options: { log: true }): vscode.LogOutputChannel;
+	getChannel(name: string, options?: { log: boolean }): vscode.OutputChannel | vscode.LogOutputChannel {
+		if (options?.log) {
+			if (!this.logChannels.has(name)) {
+				const channel = vscode.window.createOutputChannel(name, { log: true });
+				this.logChannels.set(name, channel);
+				DebugLogger.log(`Created new log output channel: ${name}`);
+			}
+			return this.logChannels.get(name)!;
+		} else {
+			if (!this.channels.has(name)) {
+				const channel = vscode.window.createOutputChannel(name);
+				this.channels.set(name, channel);
+				DebugLogger.log(`Created new output channel: ${name}`);
+			}
+			return this.channels.get(name)!;
+		}
+	}
+
+	dispose(): void {
+		for (const channel of this.channels.values()) {
+			channel.dispose();
+		}
+		for (const channel of this.logChannels.values()) {
+			channel.dispose();
+		}
+		this.channels.clear();
+		this.logChannels.clear();
+	}
+}
+
 // Global state manager for tracking running configurations
 class ConfigurationStateManager {
 	private static instance: ConfigurationStateManager;
@@ -370,7 +417,8 @@ async function saveConfigurationToLaunchJson(config: vscode.DebugConfiguration, 
 
 // Helper function to run debug configurations with run or debug mode
 export async function runDebugConfiguration(configItem: GoDebugConfiguration, mode: 'run' | 'debug'): Promise<Boolean> {
-	const outputChannel = vscode.window.createOutputChannel('Go Debug Pro');
+	const outputChannelManager = OutputChannelManager.getInstance();
+	const outputChannel = outputChannelManager.getChannel('Go Debug Pro');
 
 
 
@@ -540,7 +588,8 @@ function generateGoCommand(config: any, mode: 'run' | 'debug'): string {
 
 // Helper functions for context menu commands
 async function debugCurrentGoFile(context: vscode.ExtensionContext, mode: 'debug' | 'run'): Promise<void> {
-	const outputChannel = vscode.window.createOutputChannel('Go Debug Pro');
+	const outputChannelManager = OutputChannelManager.getInstance();
+	const outputChannel = outputChannelManager.getChannel('Go Debug Pro');
 
 	outputChannel.appendLine(`\n=== Go Debug Pro File Execution ===`);
 	outputChannel.appendLine(`Time: ${new Date().toLocaleString()}`);
@@ -712,8 +761,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	DebugLogger.log('Go Debug Pro extension activation started');
 	
-	// Show a visible notification that extension is activating
-	vscode.window.showInformationMessage('Go Debug Pro extension is activating...');
+ 
 	
 	// Create output channel immediately for debugging
 	const activationChannel = vscode.window.createOutputChannel('Go Debug Pro Activation');
@@ -991,6 +1039,10 @@ export function deactivated() {
 	if (globalGoDebugOutputProvider) {
 		globalGoDebugOutputProvider.dispose();
 	}
+	
+	// Dispose all output channels
+	const outputChannelManager = OutputChannelManager.getInstance();
+	outputChannelManager.dispose();
 	 
 	console.log('Go Debug Pro extension deactivated.');
 }
@@ -1000,7 +1052,8 @@ class GoDebugAdapterFactory implements vscode.DebugAdapterDescriptorFactory {
 	private outputChannel: vscode.LogOutputChannel;
 
 	constructor() {
-		this.outputChannel = vscode.window.createOutputChannel('Go Debug Pro Adapter',{ log: true });
+		const outputChannelManager = OutputChannelManager.getInstance();
+		this.outputChannel = outputChannelManager.getChannel('Go Debug Pro Adapter', { log: true });
 		console.log('🎯 GoDebugAdapterFactory initialized');
 	}
 
