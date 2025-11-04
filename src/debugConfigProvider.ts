@@ -303,6 +303,7 @@ export class DebugConfigurationProvider implements vscode.TreeDataProvider<Debug
 
 export class DebugConfigItem extends vscode.TreeItem {
     public readonly  workspace: string = "";
+    private vscFolderName: string = "";
     constructor(
         public readonly label: string,
         public readonly configuration: GoDebugConfiguration,
@@ -316,9 +317,9 @@ export class DebugConfigItem extends vscode.TreeItem {
         this.configuration.vscWorkspaceFolder = this.workspace;
         this.tooltip = this.generateTooltip();
         this.description = `${vscFolder.name}`;
-        
-    
-       this.refreshConfigurationState();
+        this.vscFolderName = vscFolder.name;
+
+        this.refreshConfigurationState();
 
         // 添加命令 - 单击时打开配置编辑器（避免循环引用）
         this.command = {
@@ -344,10 +345,10 @@ export class DebugConfigItem extends vscode.TreeItem {
             
             if (state?.mode === 'debug') {
                 this.iconPath = new vscode.ThemeIcon('debug-restart', new vscode.ThemeColor('debugIcon.restartForeground'));
-                this.description += ' • Debugging';
+                this.description = `${this.vscFolderName} • Debugging`;
             } else {
                 this.iconPath = new vscode.ThemeIcon('run-above', new vscode.ThemeColor('debugIcon.continueForeground'));
-                this.description += ' • Running';
+                this.description = `${this.vscFolderName} • Running`;
             }
         } else {
             // Configuration is not running - show normal context and icons
