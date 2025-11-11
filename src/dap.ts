@@ -445,13 +445,19 @@ export class DelveDAPOutputAdapter extends ProxyDebugAdapter {
 		this.sendMessageToClient(new OutputEvent(output, dest, data));
 	}
 
+	private outputLogAndEvent(dest: string, output: string, data?: any) {
+		this.outputEvent(dest, output, data);
+		GoDebugOutputProvider.Output(output, this.configuration.itemName);
+
+	}
+
 	async startDapServer(
 		configuration: vscode.DebugConfiguration
 	): Promise<{ dlvDapServer?: ChildProcess; socket: net.Socket }> {
-		const log = (msg: string) => this.outputEvent('stdout', msg);
-		const logErr = (msg: string) => this.outputEvent('stderr', msg);
+		const log = (msg: string) => this.outputLogAndEvent('stdout', msg);
+		const logErr = (msg: string) => this.outputLogAndEvent('stderr', msg);
 		const logConsole = (msg: string) => {
-			this.outputEvent('console', msg);
+			this.outputLogAndEvent('console', msg);
 			// Some log messages generated after vscode stops the debug session
 			// may not appear in the DEBUG CONSOLE. For easier debugging, log
 			// the messages through the logger that prints to Go Debug output
