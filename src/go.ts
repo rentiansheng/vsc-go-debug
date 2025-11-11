@@ -296,7 +296,7 @@ export class GoClient {
       const lines = error.split('\n');
       lines.forEach((line: string) => {
         if (line.trim()) {
-          if (line.length < 300) {
+          if (line.length < 600) {
             // 跳转到对应的文件和行号
             const columns = line.split(":");
             var filePath = columns[0];
